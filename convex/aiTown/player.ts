@@ -16,6 +16,14 @@ import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
 
+export const stepDirection = v.union(
+  v.literal('north'),
+  v.literal('south'),
+  v.literal('east'),
+  v.literal('west'),
+);
+export type StepDirection = Infer<typeof stepDirection>;
+
 const pathfinding = v.object({
   destination: point,
   started: v.number(),
@@ -263,6 +271,44 @@ export class Player {
   }
 }
 
+export function stepDestination(player: Player, direction: StepDirection): Point {
+  const position = {
+    x: Math.floor(player.position.x),
+    y: Math.floor(player.position.y),
+  };
+  switch (direction) {
+    case 'north':
+      return { x: position.x, y: position.y - 1 };
+    case 'south':
+      return { x: position.x, y: position.y + 1 };
+    case 'east':
+      return { x: position.x + 1, y: position.y };
+    case 'west':
+      return { x: position.x - 1, y: position.y };
+    default: {
+      const exhaustive: never = direction;
+      throw new Error(`Invalid step direction: ${exhaustive}`);
+    }
+  }
+}
+
+export function stepPlayer(game: Game, now: number, player: Player, direction: StepDirection) {
+  if (player.pathfinding) {
+    throw new Error(`Player ${player.id} is already moving`);
+  }
+  const conversation = game.world.playerConversation(player);
+  if (conversation?.participants.get(player.id)?.status.kind === 'participating') {
+    throw new Error(`Can't move when in a conversation. Leave the conversation first!`);
+  }
+  const destination = stepDestination(player, direction);
+  const blockedReason = blocked(game, now, destination, player.id);
+  if (blockedReason !== null) {
+    throw new Error(`Can't step ${direction}: ${blockedReason}`);
+  }
+  movePlayer(game, now, player, destination);
+  return destination;
+}
+
 export const playerInputs = {
   join: inputHandler({
     args: {
@@ -305,6 +351,20 @@ export const playerInputs = {
         stopPlayer(player);
       }
       return null;
+    },
+  }),
+  stepPlayer: inputHandler({
+    args: {
+      playerId,
+      direction: stepDirection,
+    },
+    handler: (game, now, args) => {
+      const playerId = parseGameId('players', args.playerId);
+      const player = game.world.players.get(playerId);
+      if (!player) {
+        throw new Error(`Invalid player ID ${playerId}`);
+      }
+      return stepPlayer(game, now, player, args.direction);
     },
   }),
 };

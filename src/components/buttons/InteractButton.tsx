@@ -9,6 +9,7 @@ import { Id } from '../../../convex/_generated/dataModel';
 import { useCallback } from 'react';
 import { waitForInput } from '../../hooks/sendInput';
 import { useServerGame } from '../../hooks/serverGame';
+import { DEFAULT_NAME } from '../../../convex/constants';
 
 export default function InteractButton() {
   // const { isAuthenticated } = useConvexAuth();
@@ -69,7 +70,7 @@ export default function InteractButton() {
   // }
   return (
     <Button imgUrl={interactImg} onClick={joinOrLeaveGame}>
-      {isPlaying ? 'Leave' : 'Interact'}
+      {isPlaying ? 'Leave' : `Play as ${DEFAULT_NAME}`}
     </Button>
   );
 }

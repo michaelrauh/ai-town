@@ -10,6 +10,27 @@ import { AgentDescription } from './agentDescription';
 import { Agent } from './agent';
 
 export const agentInputs = {
+  finishAgentOperation: inputHandler({
+    args: {
+      operationId: v.string(),
+      agentId,
+    },
+    handler: (game, now, args) => {
+      const agentId = parseGameId('agents', args.agentId);
+      const agent = game.world.agents.get(agentId);
+      if (!agent) {
+        throw new Error(`Couldn't find agent: ${agentId}`);
+      }
+      if (
+        !agent.inProgressOperation ||
+        agent.inProgressOperation.operationId !== args.operationId
+      ) {
+        throw new Error(`Agent ${agentId} does not have ${args.operationId} in progress`);
+      }
+      delete agent.inProgressOperation;
+      return null;
+    },
+  }),
   finishRememberConversation: inputHandler({
     args: {
       operationId: v.string(),
@@ -36,7 +57,7 @@ export const agentInputs = {
   finishDoSomething: inputHandler({
     args: {
       operationId: v.string(),
-      agentId: v.id('agents'),
+      agentId,
       destination: v.optional(point),
       invitee: v.optional(v.id('players')),
       activity: v.optional(activity),

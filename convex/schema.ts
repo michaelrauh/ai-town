@@ -21,6 +21,10 @@ export default defineSchema({
     .index('conversationId', ['worldId', 'conversationId'])
     .index('messageUuid', ['conversationId', 'messageUuid']),
 
+  runnerControl: defineTable({
+    paused: v.boolean(),
+  }),
+
   ...agentTables,
   ...aiTownTables,
   ...engineTables,

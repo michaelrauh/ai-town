@@ -76,3 +76,5 @@ export const ENGINE_ACTION_DURATION = 30000;
 export const MAX_PATHFINDS_PER_STEP = 16;
 
 export const DEFAULT_NAME = 'Me';
+export const DEFAULT_CHARACTER = 'f5';
+export const DEFAULT_DESCRIPTION = 'Me is the local human player.';

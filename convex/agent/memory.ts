@@ -1,5 +1,11 @@
 import { v } from 'convex/values';
-import { ActionCtx, DatabaseReader, internalMutation, internalQuery } from '../_generated/server';
+import {
+  ActionCtx,
+  DatabaseReader,
+  action,
+  internalMutation,
+  internalQuery,
+} from '../_generated/server';
 import { Doc, Id } from '../_generated/dataModel';
 import { internal } from '../_generated/api';
 import { LLMMessage, chatCompletion, fetchEmbedding } from '../util/llm';
@@ -7,13 +13,14 @@ import { asyncMap } from '../util/asyncMap';
 import { GameId, agentId, conversationId, playerId } from '../aiTown/ids';
 import { SerializedPlayer } from '../aiTown/player';
 import { memoryFields } from './schema';
+import * as embeddingsCache from './embeddingsCache';
 
 // How long to wait before updating a memory's last access time.
 export const MEMORY_ACCESS_THROTTLE = 300_000; // In ms
 // We fetch 10x the number of memories by relevance, to have more candidates
 // for sorting by relevance + recency + importance.
 const MEMORY_OVERFETCH = 10;
-const selfInternal = internal.agent.memory;
+const selfInternal: any = internal.agent.memory;
 
 export type Memory = Doc<'memories'>;
 export type MemoryType = Memory['data']['type'];
@@ -27,14 +34,17 @@ export async function rememberConversation(
   agentId: GameId<'agents'>,
   playerId: GameId<'players'>,
   conversationId: GameId<'conversations'>,
-) {
-  const data = await ctx.runQuery(selfInternal.loadConversation, {
+): Promise<string | undefined> {
+  const data: any = await ctx.runQuery(selfInternal.loadConversation, {
     worldId,
     playerId,
     conversationId,
   });
   const { player, otherPlayer } = data;
-  const messages = await ctx.runQuery(selfInternal.loadMessages, { worldId, conversationId });
+  const messages: Doc<'messages'>[] = await ctx.runQuery(selfInternal.loadMessages, {
+    worldId,
+    conversationId,
+  });
   if (!messages.length) {
     return;
   }
@@ -84,6 +94,50 @@ export async function rememberConversation(
   await reflectOnMemories(ctx, worldId, playerId);
   return description;
 }
+
+export const mcpRememberConversation = action({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+    agentId,
+    conversationId,
+    operationId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const description = await rememberConversation(
+      ctx,
+      args.worldId,
+      args.agentId as GameId<'agents'>,
+      args.playerId as GameId<'players'>,
+      args.conversationId as GameId<'conversations'>,
+    );
+    return { description };
+  },
+});
+
+export const mcpSearchMemory = action({
+  args: {
+    playerId,
+    query: v.string(),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const searchEmbedding = await embeddingsCache.fetch(ctx, args.query);
+    const memories = await searchMemories(
+      ctx,
+      args.playerId as GameId<'players'>,
+      searchEmbedding,
+      args.limit ?? 3,
+    );
+    return memories.map((memory: Memory) => ({
+      id: memory._id,
+      description: memory.description,
+      importance: memory.importance,
+      data: memory.data,
+      lastAccess: memory.lastAccess,
+    }));
+  },
+});
 
 export const loadConversation = internalQuery({
   args: {
@@ -160,7 +214,7 @@ export async function searchMemories(
   playerId: GameId<'players'>,
   searchEmbedding: number[],
   n: number = 3,
-) {
+): Promise<Memory[]> {
   const candidates = await ctx.vectorSearch('memoryEmbeddings', 'embedding', {
     vector: searchEmbedding,
     filter: (q) => q.eq('playerId', playerId),
@@ -170,7 +224,7 @@ export async function searchMemories(
     candidates,
     n,
   });
-  return rankedMemories.map(({ memory }) => memory);
+  return rankedMemories.map(({ memory }: { memory: Memory }) => memory);
 }
 
 function makeRange(values: number[]) {
@@ -327,7 +381,11 @@ async function reflectOnMemories(
   worldId: Id<'worlds'>,
   playerId: GameId<'players'>,
 ) {
-  const { memories, lastReflectionTs, name } = await ctx.runQuery(
+  const {
+    memories,
+    lastReflectionTs,
+    name,
+  }: { memories: Memory[]; lastReflectionTs?: number; name: string } = await ctx.runQuery(
     internal.agent.memory.getReflectionMemories,
     {
       worldId,

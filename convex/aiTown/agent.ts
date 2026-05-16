@@ -8,7 +8,6 @@ import {
   AWKWARD_CONVERSATION_TIMEOUT,
   CONVERSATION_COOLDOWN,
   CONVERSATION_DISTANCE,
-  INVITE_ACCEPT_PROBABILITY,
   INVITE_TIMEOUT,
   MAX_CONVERSATION_DURATION,
   MAX_CONVERSATION_MESSAGES,
@@ -16,12 +15,50 @@ import {
   MIDPOINT_THRESHOLD,
   PLAYER_CONVERSATION_COOLDOWN,
 } from '../constants';
-import { FunctionArgs } from 'convex/server';
-import { MutationCtx, internalMutation, internalQuery } from '../_generated/server';
+import {
+  MutationCtx,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from '../_generated/server';
 import { distance } from '../util/geometry';
-import { internal } from '../_generated/api';
 import { movePlayer } from './movement';
 import { insertInput } from './insertInput';
+import { Player } from './player';
+
+function requireAgentPlayer(game: Game, agent: Agent) {
+  const player = game.world.players.get(agent.playerId);
+  if (!player) {
+    throw new Error(`Agent ${agent.id} references missing player ${agent.playerId}`);
+  }
+  return player;
+}
+
+function freeConversationCandidates(game: Game, player: Player) {
+  return [...game.world.players.values()]
+    .filter((p) => p.id !== player.id)
+    .filter((p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)))
+    .map((p) => p.serialize());
+}
+
+function recentlyAttemptedInvite(agent: Agent, now: number) {
+  return !!agent.lastInviteAttempt && now < agent.lastInviteAttempt + CONVERSATION_COOLDOWN;
+}
+
+function shouldStartDoSomething(
+  agent: Agent,
+  player: Player,
+  hasConversation: boolean,
+  now: number,
+) {
+  const doingActivity = player.activity && player.activity.until > now;
+  return (
+    !hasConversation &&
+    !doingActivity &&
+    (!player.pathfinding || !recentlyAttemptedInvite(agent, now))
+  );
+}
 
 export class Agent {
   id: GameId<'agents'>;
@@ -50,10 +87,7 @@ export class Agent {
   }
 
   tick(game: Game, now: number) {
-    const player = game.world.players.get(this.playerId);
-    if (!player) {
-      throw new Error(`Invalid player ID ${this.playerId}`);
-    }
+    const player = requireAgentPlayer(game, this);
     if (this.inProgressOperation) {
       if (now < this.inProgressOperation.started + ACTION_TIMEOUT) {
         // Wait on the operation to finish.
@@ -64,9 +98,10 @@ export class Agent {
     }
     const conversation = game.world.playerConversation(player);
     const member = conversation?.participants.get(player.id);
+    if (conversation && !member) {
+      throw new Error(`Conversation ${conversation.id} is missing member ${player.id}`);
+    }
 
-    const recentlyAttemptedInvite =
-      this.lastInviteAttempt && now < this.lastInviteAttempt + CONVERSATION_COOLDOWN;
     const doingActivity = player.activity && player.activity.until > now;
     if (doingActivity && (conversation || player.pathfinding)) {
       player.activity!.until = now;
@@ -75,16 +110,11 @@ export class Agent {
     // If we aren't doing an activity or moving, do something.
     // If we have been wandering but haven't thought about something to do for
     // a while, do something.
-    if (!conversation && !doingActivity && (!player.pathfinding || !recentlyAttemptedInvite)) {
+    if (shouldStartDoSomething(this, player, !!conversation, now)) {
       this.startOperation(game, now, 'agentDoSomething', {
         worldId: game.worldId,
         player: player.serialize(),
-        otherFreePlayers: [...game.world.players.values()]
-          .filter((p) => p.id !== player.id)
-          .filter(
-            (p) => ![...game.world.conversations.values()].find((c) => c.participants.has(p.id)),
-          )
-          .map((p) => p.serialize()),
+        otherFreePlayers: freeConversationCandidates(game, player),
         agent: this.serialize(),
         map: game.worldMap.serialize(),
       });
@@ -109,19 +139,14 @@ export class Agent {
       )!;
       const otherPlayer = game.world.players.get(otherPlayerId)!;
       if (member.status.kind === 'invited') {
-        // Accept a conversation with another agent with some probability and with
-        // a human unconditionally.
-        if (otherPlayer.human || Math.random() < INVITE_ACCEPT_PROBABILITY) {
-          console.log(`Agent ${player.id} accepting invite from ${otherPlayer.id}`);
-          conversation.acceptInvite(game, player);
-          // Stop moving so we can start walking towards the other player.
-          if (player.pathfinding) {
-            delete player.pathfinding;
-          }
-        } else {
-          console.log(`Agent ${player.id} rejecting invite from ${otherPlayer.id}`);
-          conversation.rejectInvite(game, now, player);
-        }
+        this.startOperation(game, now, 'agentHandleInvite', {
+          worldId: game.worldId,
+          playerId: player.id,
+          agentId: this.id,
+          conversationId: conversation.id,
+          otherPlayerId,
+          otherPlayerIsHuman: !!otherPlayer.human,
+        });
         return;
       }
       if (member.status.kind === 'walkingOver') {
@@ -179,6 +204,7 @@ export class Agent {
               agentId: this.id,
               conversationId: conversation.id,
               otherPlayerId: otherPlayer.id,
+              otherPlayerIsHuman: !!otherPlayer.human,
               messageUuid,
               type: 'start',
             });
@@ -200,6 +226,7 @@ export class Agent {
             agentId: this.id,
             conversationId: conversation.id,
             otherPlayerId: otherPlayer.id,
+            otherPlayerIsHuman: !!otherPlayer.human,
             messageUuid,
             type: 'leave',
           });
@@ -227,6 +254,7 @@ export class Agent {
           agentId: this.id,
           conversationId: conversation.id,
           otherPlayerId: otherPlayer.id,
+          otherPlayerIsHuman: !!otherPlayer.human,
           messageUuid,
           type: 'continue',
         });
@@ -235,12 +263,7 @@ export class Agent {
     }
   }
 
-  startOperation<Name extends keyof AgentOperations>(
-    game: Game,
-    now: number,
-    name: Name,
-    args: Omit<FunctionArgs<AgentOperations[Name]>, 'operationId'>,
-  ) {
+  startOperation(game: Game, now: number, name: string, args: Record<string, unknown>) {
     if (this.inProgressOperation) {
       throw new Error(
         `Agent ${this.id} already has an operation: ${JSON.stringify(this.inProgressOperation)}`,
@@ -284,25 +307,140 @@ export const serializedAgent = {
 };
 export type SerializedAgent = ObjectType<typeof serializedAgent>;
 
-type AgentOperations = typeof internal.aiTown.agentOperations;
-
 export async function runAgentOperation(ctx: MutationCtx, operation: string, args: any) {
-  let reference;
-  switch (operation) {
-    case 'agentRememberConversation':
-      reference = internal.aiTown.agentOperations.agentRememberConversation;
-      break;
-    case 'agentGenerateMessage':
-      reference = internal.aiTown.agentOperations.agentGenerateMessage;
-      break;
-    case 'agentDoSomething':
-      reference = internal.aiTown.agentOperations.agentDoSomething;
-      break;
-    default:
-      throw new Error(`Unknown operation: ${operation}`);
+  const operationId = args.operationId;
+  if (!operationId) {
+    throw new Error(`MCP agent operation ${operation} is missing operationId`);
   }
-  await ctx.scheduler.runAfter(0, reference, args);
+  const humanInvolved =
+    (operation === 'agentHandleInvite' || operation === 'agentGenerateMessage') &&
+    !!args.otherPlayerIsHuman;
+  await ctx.db.insert('mcpAgentOperations', {
+    worldId: args.worldId,
+    operationId,
+    name: operation,
+    agentId: args.agentId ?? args.agent?.id,
+    playerId: args.playerId ?? args.player?.id,
+    args,
+    status: 'queued',
+    created: Date.now(),
+    humanInvolved,
+  });
 }
+
+export const pendingAgentOperations = query({
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 16;
+    const highPrio = await ctx.db
+      .query('mcpAgentOperations')
+      .withIndex('status_human_created', (q) => q.eq('status', 'queued').eq('humanInvolved', true))
+      .order('asc')
+      .take(limit);
+    if (highPrio.length >= limit) {
+      return highPrio;
+    }
+    const lowPrio = await ctx.db
+      .query('mcpAgentOperations')
+      .withIndex('status_human_created', (q) => q.eq('status', 'queued').eq('humanInvolved', false))
+      .order('asc')
+      .take(limit - highPrio.length);
+    return [...highPrio, ...lowPrio];
+  },
+});
+
+export const claimAgentOperation = mutation({
+  args: {
+    operationId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const operation = await ctx.db
+      .query('mcpAgentOperations')
+      .withIndex('operationId', (q) => q.eq('operationId', args.operationId))
+      .unique();
+    if (!operation) {
+      throw new Error(`MCP agent operation ${args.operationId} not found`);
+    }
+    if (operation.status !== 'queued') {
+      throw new Error(`MCP agent operation ${args.operationId} is ${operation.status}`);
+    }
+    const claimedAt = Date.now();
+    await ctx.db.patch(operation._id, {
+      status: 'running',
+      claimedAt,
+    });
+    return { ...operation, status: 'running' as const, claimedAt };
+  },
+});
+
+export const completeAgentOperation = mutation({
+  args: {
+    operationId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const operation = await ctx.db
+      .query('mcpAgentOperations')
+      .withIndex('operationId', (q) => q.eq('operationId', args.operationId))
+      .unique();
+    if (!operation) {
+      return null;
+    }
+    await ctx.db.delete(operation._id);
+    return null;
+  },
+});
+
+export const failAgentOperation = mutation({
+  args: {
+    operationId: v.string(),
+    error: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const operation = await ctx.db
+      .query('mcpAgentOperations')
+      .withIndex('operationId', (q) => q.eq('operationId', args.operationId))
+      .unique();
+    if (!operation) {
+      throw new Error(`MCP agent operation ${args.operationId} not found`);
+    }
+    await ctx.db.patch(operation._id, {
+      status: 'failed',
+      error: args.error,
+    });
+    return null;
+  },
+});
+
+export const mcpAgentSendMessage = mutation({
+  args: {
+    worldId: v.id('worlds'),
+    conversationId,
+    agentId,
+    playerId,
+    text: v.string(),
+    messageUuid: v.string(),
+    leaveConversation: v.boolean(),
+    operationId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert('messages', {
+      conversationId: args.conversationId,
+      author: args.playerId,
+      text: args.text,
+      messageUuid: args.messageUuid,
+      worldId: args.worldId,
+    });
+    return await insertInput(ctx, args.worldId, 'agentFinishSendingMessage', {
+      conversationId: args.conversationId,
+      agentId: args.agentId,
+      timestamp: Date.now(),
+      leaveConversation: args.leaveConversation,
+      operationId: args.operationId,
+    });
+  },
+});
 
 export const agentSendMessage = internalMutation({
   args: {

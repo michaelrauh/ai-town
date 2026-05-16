@@ -14,6 +14,35 @@ import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
+import type { StepDirection } from '../../convex/aiTown/player.ts';
+
+function isEditableKeyboardTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  const tagName = target.tagName.toLowerCase();
+  return (
+    tagName === 'input' ||
+    tagName === 'textarea' ||
+    tagName === 'select' ||
+    target.isContentEditable
+  );
+}
+
+function directionFromKey(key: string): StepDirection | null {
+  switch (key) {
+    case 'ArrowUp':
+      return 'north';
+    case 'ArrowDown':
+      return 'south';
+    case 'ArrowRight':
+      return 'east';
+    case 'ArrowLeft':
+      return 'west';
+    default:
+      return null;
+  }
+}
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -29,11 +58,13 @@ export const PixiGame = (props: {
   const viewportRef = useRef<Viewport | undefined>();
 
   const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
-  const humanPlayerId = [...props.game.world.players.values()].find(
+  const humanPlayer = [...props.game.world.players.values()].find(
     (p) => p.human === humanTokenIdentifier,
-  )?.id;
+  );
+  const humanPlayerId = humanPlayer?.id;
 
   const moveTo = useSendInput(props.engineId, 'moveTo');
+  const stepPlayer = useSendInput(props.engineId, 'stepPlayer');
 
   // Interaction for clicking on the world to navigate.
   const dragStart = useRef<{ screenX: number; screenY: number } | null>(null);
@@ -82,16 +113,48 @@ export const PixiGame = (props: {
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
 
-  // Zoom on the user’s avatar when it is created
   useEffect(() => {
-    if (!viewportRef.current || humanPlayerId === undefined) return;
+    if (!humanPlayerId) {
+      return undefined;
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      const direction = directionFromKey(e.key);
+      if (!direction || e.defaultPrevented || isEditableKeyboardTarget(e.target)) {
+        return;
+      }
+      const humanPlayer = props.game.world.players.get(humanPlayerId);
+      if (!humanPlayer || humanPlayer.pathfinding) {
+        return;
+      }
+      e.preventDefault();
+      void toastOnError(stepPlayer({ playerId: humanPlayerId, direction }));
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [humanPlayerId, props.game.world.players, stepPlayer]);
 
-    const humanPlayer = props.game.world.players.get(humanPlayerId)!;
+  // Keep the camera centered on the playable character.
+  useEffect(() => {
+    if (!viewportRef.current || !humanPlayer || props.width === 0 || props.height === 0) {
+      return;
+    }
+
     viewportRef.current.animate({
-      position: new PIXI.Point(humanPlayer.position.x * tileDim, humanPlayer.position.y * tileDim),
-      scale: 1.5,
+      position: new PIXI.Point(
+        humanPlayer.position.x * tileDim + tileDim / 2,
+        humanPlayer.position.y * tileDim + tileDim / 2,
+      ),
+      scale: 2,
+      time: 150,
     });
-  }, [humanPlayerId]);
+  }, [
+    humanPlayer,
+    humanPlayer?.position.x,
+    humanPlayer?.position.y,
+    props.height,
+    props.width,
+    tileDim,
+  ]);
 
   return (
     <PixiViewport

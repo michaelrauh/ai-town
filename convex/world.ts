@@ -1,8 +1,9 @@
 import { ConvexError, v } from 'convex/values';
 import { internalMutation, mutation, query } from './_generated/server';
-import { characters } from '../data/characters';
 import { insertInput } from './aiTown/insertInput';
 import {
+  DEFAULT_CHARACTER,
+  DEFAULT_DESCRIPTION,
   DEFAULT_NAME,
   ENGINE_ACTION_DURATION,
   IDLE_WORLD_TIMEOUT,
@@ -131,8 +132,8 @@ export const joinWorld = mutation({
     // const { tokenIdentifier } = identity;
     return await insertInput(ctx, world._id, 'join', {
       name,
-      character: characters[Math.floor(Math.random() * characters.length)].name,
-      description: `${DEFAULT_NAME} is a human player`,
+      character: DEFAULT_CHARACTER,
+      description: DEFAULT_DESCRIPTION,
       // description: `${identity.givenName} is a human player`,
       tokenIdentifier: DEFAULT_NAME,
     });

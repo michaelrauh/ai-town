@@ -1,7 +1,8 @@
 import { Id, TableNames } from './_generated/dataModel';
-import { internal } from './_generated/api';
+import { api, internal } from './_generated/api';
 import {
   DatabaseReader,
+  action,
   internalAction,
   internalMutation,
   mutation,
@@ -17,8 +18,51 @@ import { chatCompletion } from './util/llm';
 import { startConversationMessage } from './agent/conversation';
 import { GameId } from './aiTown/ids';
 
-// Clear all of the tables except for the embeddings cache.
-const excludedTables: Array<TableNames> = ['embeddingsCache'];
+// Clear all of the tables except for the embeddings cache and runner control flag.
+const excludedTables: Array<TableNames> = ['embeddingsCache', 'runnerControl'];
+
+export const getRunnerPaused = query({
+  handler: async (ctx) => {
+    const row = await ctx.db.query('runnerControl').first();
+    return row?.paused ?? false;
+  },
+});
+
+export const setRunnerPaused = internalMutation({
+  args: { paused: v.boolean() },
+  handler: async (ctx, args) => {
+    const row = await ctx.db.query('runnerControl').first();
+    if (row) {
+      await ctx.db.patch(row._id, { paused: args.paused });
+    } else {
+      await ctx.db.insert('runnerControl', { paused: args.paused });
+    }
+  },
+});
+
+export const restart = action({
+  handler: async (ctx) => {
+    await ctx.runMutation(internal.testing.setRunnerPaused, { paused: true });
+    try {
+      // Give the runner a moment to finish its current iteration.
+      await new Promise((r) => setTimeout(r, 2000));
+      await ctx.runMutation(internal.testing.wipeAllTables);
+      while (true) {
+        const ws = await ctx.runQuery(api.world.defaultWorldStatus);
+        if (!ws) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      await ctx.runMutation(api.init.default, {});
+      const ws = await ctx.runQuery(api.world.defaultWorldStatus);
+      if (!ws) {
+        throw new Error('Restart: init did not create a default world.');
+      }
+      await ctx.runMutation(api.world.joinWorld, { worldId: ws.worldId });
+    } finally {
+      await ctx.runMutation(internal.testing.setRunnerPaused, { paused: false });
+    }
+  },
+});
 
 export const wipeAllTables = internalMutation({
   handler: async (ctx) => {

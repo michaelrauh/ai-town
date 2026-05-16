@@ -50,6 +50,7 @@ export const agentInputs = {
       } else {
         delete agent.inProgressOperation;
         delete agent.toRemember;
+        agent.toReflect = true;
       }
       return null;
     },
@@ -168,6 +169,11 @@ export const agentInputs = {
           agentId: agentId,
           identity: description.identity,
           plan: description.plan,
+          homeName: (description as any).homeName,
+          profession: (description as any).profession,
+          family: (description as any).family,
+          friends: (description as any).friends,
+          schedule: (description as any).schedule,
         }),
       );
       return { agentId };

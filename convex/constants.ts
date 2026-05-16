@@ -78,3 +78,17 @@ export const MAX_PATHFINDS_PER_STEP = 16;
 export const DEFAULT_NAME = 'Me';
 export const DEFAULT_CHARACTER = 'f5';
 export const DEFAULT_DESCRIPTION = 'Me is the local human player.';
+
+// One in-game day every 10 real minutes, split into 5 equal blocks of 2 real minutes.
+export const GAME_DAY_MS = 10 * 60_000;
+export const SCHEDULE_BLOCKS = ['morning', 'midday', 'afternoon', 'evening', 'night'] as const;
+export type ScheduleBlock = (typeof SCHEDULE_BLOCKS)[number];
+
+export function gameTimeOfDay(now: number): ScheduleBlock {
+  const fractionOfDay = ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS / GAME_DAY_MS;
+  const idx = Math.min(
+    SCHEDULE_BLOCKS.length - 1,
+    Math.floor(fractionOfDay * SCHEDULE_BLOCKS.length),
+  );
+  return SCHEDULE_BLOCKS[idx];
+}

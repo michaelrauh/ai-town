@@ -130,3 +130,10 @@ export function compressPath(densePath: PathComponent[]): Path {
   }
   return out;
 }
+
+export function inBbox(
+  p: Point,
+  bbox: { x: number; y: number; w: number; h: number },
+): boolean {
+  return p.x >= bbox.x && p.x < bbox.x + bbox.w && p.y >= bbox.y && p.y < bbox.y + bbox.h;
+}

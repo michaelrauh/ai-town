@@ -256,6 +256,35 @@ export function tools() {
       },
     },
     {
+      name: 'aitown.save_reflections',
+      description:
+        'Persist a batch of reflection memories for an NPC and finish the agentReflect operation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worldId: { type: 'string' },
+          agentId: { type: 'string' },
+          playerId: { type: 'string' },
+          operationId: { type: 'string' },
+          reflections: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                description: { type: 'string' },
+                relatedMemoryIds: { type: 'array', items: { type: 'string' } },
+                importance: { type: 'number' },
+              },
+              required: ['description', 'relatedMemoryIds', 'importance'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['agentId', 'playerId', 'operationId', 'reflections'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'aitown.remember_conversation',
       description: 'Create structured/vector memory for an archived conversation through MCP.',
       inputSchema: {
@@ -379,6 +408,16 @@ export async function callTool(name, args) {
       });
       return textContent(await waitForInput(inputId));
     }
+    case 'aitown.save_reflections': {
+      const result = await convexClient().action(api.agent.memory.mcpSaveReflections, {
+        worldId,
+        agentId: args.agentId,
+        playerId: args.playerId,
+        operationId: args.operationId,
+        reflections: args.reflections,
+      });
+      return textContent(await waitForInput(result));
+    }
     case 'aitown.remember_conversation': {
       const result = await convexClient().action(api.agent.memory.mcpRememberConversation, {
         worldId,
@@ -494,6 +533,16 @@ export async function readResource(uri) {
       conversationId,
     });
     return resourceContents(uri, messages);
+  }
+  match = uri.match(/^aitown:\/\/memories\/([^/]+)\/([^/]+)\/recent$/);
+  if (match) {
+    const [, worldId, playerId] = match;
+    const data = await convexClient().query(api.agent.memory.recentMemoriesForReflection, {
+      worldId,
+      playerId,
+      limit: 20,
+    });
+    return resourceContents(uri, data);
   }
   throw new Error(`Unknown resource: ${uri}`);
 }

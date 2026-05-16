@@ -3,8 +3,10 @@ import {
   ActionCtx,
   DatabaseReader,
   action,
+  internalAction,
   internalMutation,
   internalQuery,
+  query,
 } from '../_generated/server';
 import { Doc, Id } from '../_generated/dataModel';
 import { internal } from '../_generated/api';
@@ -338,6 +340,187 @@ export const insertMemory = internalMutation({
     await ctx.db.insert('memories', {
       ...memory,
       embeddingId,
+    });
+  },
+});
+
+export const recentMemoriesForReflection = query({
+  args: { worldId: v.id('worlds'), playerId, limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const playerDescription = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
+      .first();
+    const memories = await ctx.db
+      .query('memories')
+      .withIndex('playerId', (q) => q.eq('playerId', args.playerId))
+      .order('desc')
+      .take(args.limit ?? 20);
+    return {
+      name: playerDescription?.name ?? null,
+      memories: memories.map((m) => ({
+        id: m._id,
+        description: m.description,
+        importance: m.importance,
+        type: m.data.type,
+        createdAt: m._creationTime,
+      })),
+    };
+  },
+});
+
+export const mcpSaveReflections = action({
+  args: {
+    worldId: v.id('worlds'),
+    agentId,
+    playerId,
+    operationId: v.string(),
+    reflections: v.array(
+      v.object({
+        description: v.string(),
+        relatedMemoryIds: v.array(v.id('memories')),
+        importance: v.number(),
+      }),
+    ),
+  },
+  handler: async (ctx, args) => {
+    const enriched = await Promise.all(
+      args.reflections.map(async (r) => {
+        const { embedding } = await fetchEmbedding(r.description);
+        return { ...r, embedding };
+      }),
+    );
+    await ctx.runMutation(selfInternal.insertReflectionMemories, {
+      worldId: args.worldId,
+      playerId: args.playerId,
+      reflections: enriched,
+    });
+    return await ctx.runMutation(selfInternal.finishReflectInput, {
+      worldId: args.worldId,
+      agentId: args.agentId,
+      operationId: args.operationId,
+    });
+  },
+});
+
+export const finishReflectInput = internalMutation({
+  args: { worldId: v.id('worlds'), agentId, operationId: v.string() },
+  handler: async (ctx, args) => {
+    const { insertInput } = await import('../aiTown/insertInput');
+    return await insertInput(ctx, args.worldId, 'finishAgentOperation', {
+      agentId: args.agentId,
+      operationId: args.operationId,
+    });
+  },
+});
+
+export const seedRelationshipMemories = internalAction({
+  args: { worldId: v.id('worlds') },
+  handler: async (ctx, args) => {
+    const seeds: Array<{ playerId: string; otherPlayerId: string; description: string }> =
+      await ctx.runQuery(selfInternal.collectRelationshipSeeds, { worldId: args.worldId });
+    for (const seed of seeds) {
+      const exists: boolean = await ctx.runQuery(selfInternal.relationshipMemoryExists, {
+        playerId: seed.playerId,
+        otherPlayerId: seed.otherPlayerId,
+      });
+      if (exists) continue;
+      const { embedding } = await fetchEmbedding(seed.description);
+      await ctx.runMutation(selfInternal.insertRelationshipMemory, {
+        playerId: seed.playerId,
+        otherPlayerId: seed.otherPlayerId,
+        description: seed.description,
+        importance: 8,
+        embedding,
+      });
+    }
+  },
+});
+
+export const collectRelationshipSeeds = internalQuery({
+  args: { worldId: v.id('worlds') },
+  handler: async (ctx, args) => {
+    const world = await ctx.db.get(args.worldId);
+    if (!world) return [];
+    const playerDescs = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+    const agentDescs = await ctx.db
+      .query('agentDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+    const nameToPlayer = new Map(playerDescs.map((p) => [p.name, p.playerId]));
+    const agentToPlayer = new Map(world.agents.map((a) => [a.id, a.playerId]));
+    const playerDescById = new Map(playerDescs.map((p) => [p.playerId, p]));
+    type Seed = { playerId: string; otherPlayerId: string; description: string };
+    const seeds: Seed[] = [];
+    for (const agentDesc of agentDescs) {
+      const myPlayerId = agentToPlayer.get(agentDesc.agentId);
+      if (!myPlayerId) continue;
+      for (const friendName of agentDesc.friends ?? []) {
+        const otherPlayerId = nameToPlayer.get(friendName);
+        if (!otherPlayerId || otherPlayerId === myPlayerId) continue;
+        const otherDesc = playerDescById.get(otherPlayerId);
+        seeds.push({
+          playerId: myPlayerId,
+          otherPlayerId,
+          description: `${friendName} is my friend. ${otherDesc?.description ?? ''}`.trim(),
+        });
+      }
+      for (const f of agentDesc.family ?? []) {
+        const otherPlayerId = nameToPlayer.get(f.name);
+        if (!otherPlayerId || otherPlayerId === myPlayerId) continue;
+        const otherDesc = playerDescById.get(otherPlayerId);
+        seeds.push({
+          playerId: myPlayerId,
+          otherPlayerId,
+          description: `${f.name} is my ${f.kind}. ${otherDesc?.description ?? ''}`.trim(),
+        });
+      }
+    }
+    return seeds;
+  },
+});
+
+export const relationshipMemoryExists = internalQuery({
+  args: { playerId, otherPlayerId: playerId },
+  handler: async (ctx, args) => {
+    const memories = await ctx.db
+      .query('memories')
+      .withIndex('playerId_type', (q) =>
+        q.eq('playerId', args.playerId).eq('data.type', 'relationship'),
+      )
+      .collect();
+    return memories.some(
+      (m) => m.data.type === 'relationship' && m.data.playerId === args.otherPlayerId,
+    );
+  },
+});
+
+export const insertRelationshipMemory = internalMutation({
+  args: {
+    playerId,
+    otherPlayerId: playerId,
+    description: v.string(),
+    importance: v.number(),
+    embedding: v.array(v.float64()),
+  },
+  handler: async (ctx, args) => {
+    const embeddingId = await ctx.db.insert('memoryEmbeddings', {
+      playerId: args.playerId,
+      embedding: args.embedding,
+    });
+    await ctx.db.insert('memories', {
+      playerId: args.playerId,
+      description: args.description,
+      embeddingId,
+      importance: args.importance,
+      lastAccess: Date.now(),
+      data: {
+        type: 'relationship',
+        playerId: args.otherPlayerId,
+      },
     });
   },
 });

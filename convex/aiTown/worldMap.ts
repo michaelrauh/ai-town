@@ -15,6 +15,26 @@ const animatedSprite = {
 };
 export type AnimatedSprite = ObjectType<typeof animatedSprite>;
 
+export const poi = v.object({
+  id: v.string(),
+  name: v.string(),
+  kind: v.union(
+    v.literal('home'),
+    v.literal('shop'),
+    v.literal('park'),
+    v.literal('workplace'),
+  ),
+  bbox: v.object({ x: v.number(), y: v.number(), w: v.number(), h: v.number() }),
+  description: v.string(),
+});
+export type Poi = {
+  id: string;
+  name: string;
+  kind: 'home' | 'shop' | 'park' | 'workplace';
+  bbox: { x: number; y: number; w: number; h: number };
+  description: string;
+};
+
 export const serializedWorldMap = {
   width: v.number(),
   height: v.number(),
@@ -29,6 +49,7 @@ export const serializedWorldMap = {
   bgTiles: v.array(v.array(v.array(v.number()))),
   objectTiles: v.array(tileLayer),
   animatedSprites: v.array(v.object(animatedSprite)),
+  pois: v.optional(v.array(poi)),
 };
 export type SerializedWorldMap = ObjectType<typeof serializedWorldMap>;
 
@@ -45,6 +66,7 @@ export class WorldMap {
   bgTiles: TileLayer[];
   objectTiles: TileLayer[];
   animatedSprites: AnimatedSprite[];
+  pois: Poi[];
 
   constructor(serialized: SerializedWorldMap) {
     this.width = serialized.width;
@@ -56,6 +78,7 @@ export class WorldMap {
     this.bgTiles = serialized.bgTiles;
     this.objectTiles = serialized.objectTiles;
     this.animatedSprites = serialized.animatedSprites;
+    this.pois = serialized.pois ?? [];
   }
 
   serialize(): SerializedWorldMap {
@@ -69,6 +92,7 @@ export class WorldMap {
       bgTiles: this.bgTiles,
       objectTiles: this.objectTiles,
       animatedSprites: this.animatedSprites,
+      pois: this.pois,
     };
   }
 }

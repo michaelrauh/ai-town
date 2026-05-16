@@ -3,6 +3,7 @@ import { internal } from './_generated/api';
 import { DatabaseReader, MutationCtx, mutation } from './_generated/server';
 import { Descriptions } from '../data/characters';
 import * as map from '../data/gentle';
+import { pois } from '../data/pois';
 import { insertInput } from './aiTown/insertInput';
 import { Id } from './_generated/dataModel';
 import { createEngine } from './aiTown/main';
@@ -34,6 +35,10 @@ const init = mutation({
           descriptionIndex: i % Descriptions.length,
         });
       }
+      // Wait for the engine to materialize agents+descriptions, then seed relationship memories.
+      await ctx.scheduler.runAfter(8000, internal.agent.memory.seedRelationshipMemories, {
+        worldId: worldStatus.worldId,
+      });
     }
   },
 });
@@ -78,6 +83,7 @@ async function getOrCreateDefaultWorld(ctx: MutationCtx) {
     bgTiles: map.bgtiles,
     objectTiles: map.objmap,
     animatedSprites: map.animatedsprites,
+    pois,
   });
   await ctx.scheduler.runAfter(0, internal.aiTown.main.runStep, {
     worldId,

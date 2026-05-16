@@ -14,6 +14,7 @@ import {
   MESSAGE_COOLDOWN,
   MIDPOINT_THRESHOLD,
   PLAYER_CONVERSATION_COOLDOWN,
+  gameTimeOfDay,
 } from '../constants';
 import {
   MutationCtx,
@@ -22,7 +23,7 @@ import {
   mutation,
   query,
 } from '../_generated/server';
-import { distance } from '../util/geometry';
+import { distance, inBbox } from '../util/geometry';
 import { movePlayer } from './movement';
 import { insertInput } from './insertInput';
 import { Player } from './player';
@@ -64,6 +65,7 @@ export class Agent {
   id: GameId<'agents'>;
   playerId: GameId<'players'>;
   toRemember?: GameId<'conversations'>;
+  toReflect?: boolean;
   lastConversation?: number;
   lastInviteAttempt?: number;
   inProgressOperation?: {
@@ -73,7 +75,7 @@ export class Agent {
   };
 
   constructor(serialized: SerializedAgent) {
-    const { id, lastConversation, lastInviteAttempt, inProgressOperation } = serialized;
+    const { id, lastConversation, lastInviteAttempt, inProgressOperation, toReflect } = serialized;
     const playerId = parseGameId('players', serialized.playerId);
     this.id = parseGameId('agents', id);
     this.playerId = playerId;
@@ -81,6 +83,7 @@ export class Agent {
       serialized.toRemember !== undefined
         ? parseGameId('conversations', serialized.toRemember)
         : undefined;
+    this.toReflect = toReflect;
     this.lastConversation = lastConversation;
     this.lastInviteAttempt = lastInviteAttempt;
     this.inProgressOperation = inProgressOperation;
@@ -111,12 +114,38 @@ export class Agent {
     // If we have been wandering but haven't thought about something to do for
     // a while, do something.
     if (shouldStartDoSomething(this, player, !!conversation, now)) {
+      const block = gameTimeOfDay(now);
+      const desc = game.agentDescriptions.get(this.id);
+      const scheduled = desc?.schedule.find((s) => s.block === block);
+      const scheduledPoi = scheduled
+        ? game.worldMap.pois.find((p) => p.id === scheduled.poi)
+        : undefined;
+
+      // Deterministic walk: if the schedule says we should be somewhere we are not, just go there.
+      if (scheduledPoi && !inBbox(player.position, scheduledPoi.bbox)) {
+        if (!player.pathfinding) {
+          const target = {
+            x: Math.floor(scheduledPoi.bbox.x + scheduledPoi.bbox.w / 2),
+            y: Math.floor(scheduledPoi.bbox.y + scheduledPoi.bbox.h / 2),
+          };
+          console.log(
+            `Agent ${this.id} heading to scheduled POI ${scheduled!.poi} (block=${block}).`,
+          );
+          movePlayer(game, now, player, target);
+        }
+        return;
+      }
+
       this.startOperation(game, now, 'agentDoSomething', {
         worldId: game.worldId,
         player: player.serialize(),
         otherFreePlayers: freeConversationCandidates(game, player),
         agent: this.serialize(),
         map: game.worldMap.serialize(),
+        scheduledBlock: block,
+        scheduledActivity: scheduled?.activity,
+        scheduledPoi: scheduled?.poi,
+        atScheduledPoi: !!scheduledPoi,
       });
       return;
     }
@@ -131,6 +160,17 @@ export class Agent {
         conversationId: this.toRemember,
       });
       delete this.toRemember;
+      return;
+    }
+    // If a conversation just ended and we haven't reflected yet, do that.
+    if (this.toReflect && !conversation) {
+      console.log(`Agent ${this.id} reflecting on recent memories.`);
+      this.startOperation(game, now, 'agentReflect', {
+        worldId: game.worldId,
+        playerId: this.playerId,
+        agentId: this.id,
+      });
+      delete this.toReflect;
       return;
     }
     if (conversation && member) {
@@ -284,6 +324,7 @@ export class Agent {
       id: this.id,
       playerId: this.playerId,
       toRemember: this.toRemember,
+      toReflect: this.toReflect,
       lastConversation: this.lastConversation,
       lastInviteAttempt: this.lastInviteAttempt,
       inProgressOperation: this.inProgressOperation,
@@ -295,6 +336,7 @@ export const serializedAgent = {
   id: agentId,
   playerId: playerId,
   toRemember: v.optional(conversationId),
+  toReflect: v.optional(v.boolean()),
   lastConversation: v.optional(v.number()),
   lastInviteAttempt: v.optional(v.number()),
   inProgressOperation: v.optional(

@@ -9,12 +9,13 @@ import {
   MAX_HUMAN_PLAYERS,
   MAX_PATHFINDS_PER_STEP,
 } from '../constants';
-import { pointsEqual, pathPosition } from '../util/geometry';
+import { inBbox, pointsEqual, pathPosition } from '../util/geometry';
 import { Game } from './game';
 import { stopPlayer, findRoute, blocked, movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
+import { findAffordanceByRef, poiCenter } from './worldMap';
 
 export const stepDirection = v.union(
   v.literal('north'),
@@ -50,11 +51,31 @@ export const activity = v.object({
 });
 export type Activity = Infer<typeof activity>;
 
+export const objectUse = v.object({
+  objectRef: v.string(),
+  objectName: v.string(),
+  affordanceId: v.string(),
+  affordanceName: v.string(),
+  description: v.string(),
+  emoji: v.optional(v.string()),
+  until: v.number(),
+});
+export type ObjectUse = Infer<typeof objectUse>;
+
+const useObjectRequestFields = {
+  objectRef: v.string(),
+  affordanceId: v.string(),
+  durationMs: v.optional(v.number()),
+};
+export const useObjectRequest = v.object(useObjectRequestFields);
+export type UseObjectRequest = Infer<typeof useObjectRequest>;
+
 export const serializedPlayer = {
   id: playerId,
   human: v.optional(v.string()),
   pathfinding: v.optional(pathfinding),
   activity: v.optional(activity),
+  objectUse: v.optional(objectUse),
 
   // The last time they did something.
   lastInput: v.number(),
@@ -70,6 +91,7 @@ export class Player {
   human?: string;
   pathfinding?: Pathfinding;
   activity?: Activity;
+  objectUse?: ObjectUse;
 
   lastInput: number;
 
@@ -78,11 +100,13 @@ export class Player {
   speed: number;
 
   constructor(serialized: SerializedPlayer) {
-    const { id, human, pathfinding, activity, lastInput, position, facing, speed } = serialized;
+    const { id, human, pathfinding, activity, objectUse, lastInput, position, facing, speed } =
+      serialized;
     this.id = parseGameId('players', id);
     this.human = human;
     this.pathfinding = pathfinding;
     this.activity = activity;
+    this.objectUse = objectUse;
     this.lastInput = lastInput;
     this.position = position;
     this.facing = facing;
@@ -180,6 +204,7 @@ export class Player {
     character: string,
     description: string,
     tokenIdentifier?: string,
+    homeName?: string,
   ) {
     if (tokenIdentifier) {
       let numHumans = 0;
@@ -196,16 +221,25 @@ export class Player {
       }
     }
     let position;
-    for (let attempt = 0; attempt < 10; attempt++) {
-      const candidate = {
-        x: Math.floor(Math.random() * game.worldMap.width),
-        y: Math.floor(Math.random() * game.worldMap.height),
-      };
-      if (blocked(game, now, candidate)) {
-        continue;
+    const home = homeName ? game.worldMap.pois.find((p) => p.id === homeName) : undefined;
+    if (home) {
+      const candidate = poiCenter(home);
+      if (blocked(game, now, candidate) === null) {
+        position = candidate;
       }
-      position = candidate;
-      break;
+    }
+    if (!position) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const candidate = {
+          x: Math.floor(Math.random() * game.worldMap.width),
+          y: Math.floor(Math.random() * game.worldMap.height),
+        };
+        if (blocked(game, now, candidate)) {
+          continue;
+        }
+        position = candidate;
+        break;
+      }
     }
     if (!position) {
       throw new Error(`Failed to find a free position!`);
@@ -257,12 +291,14 @@ export class Player {
   }
 
   serialize(): SerializedPlayer {
-    const { id, human, pathfinding, activity, lastInput, position, facing, speed } = this;
+    const { id, human, pathfinding, activity, objectUse, lastInput, position, facing, speed } =
+      this;
     return {
       id,
       human,
       pathfinding,
       activity,
+      objectUse,
       lastInput,
       position,
       facing,
@@ -313,6 +349,44 @@ export function stepPlayer(game: Game, now: number, player: Player, direction: S
   return destination;
 }
 
+const DEFAULT_OBJECT_USE_DURATION_MS = 60_000;
+const MIN_OBJECT_USE_DURATION_MS = 5_000;
+const MAX_OBJECT_USE_DURATION_MS = 600_000;
+
+function objectUseDurationMs(requested?: number, fallback?: number) {
+  const duration = requested ?? fallback ?? DEFAULT_OBJECT_USE_DURATION_MS;
+  return Math.max(MIN_OBJECT_USE_DURATION_MS, Math.min(MAX_OBJECT_USE_DURATION_MS, duration));
+}
+
+export function startObjectUse(game: Game, now: number, player: Player, request: UseObjectRequest) {
+  const conversation = game.world.playerConversation(player);
+  if (conversation?.participants.get(player.id)?.status.kind === 'participating') {
+    throw new Error(`Can't use an object when in a conversation. Leave the conversation first!`);
+  }
+  const match = findAffordanceByRef(game.worldMap.pois, request.objectRef, request.affordanceId);
+  if (!match) {
+    throw new Error(`Invalid object affordance ${request.objectRef}#${request.affordanceId}`);
+  }
+  if (!inBbox(player.position, match.poi.bbox)) {
+    throw new Error(`Player ${player.id} is not near ${match.poi.name}`);
+  }
+  stopPlayer(player);
+  const nextUse: ObjectUse = {
+    objectRef: request.objectRef,
+    objectName: match.object.name,
+    affordanceId: request.affordanceId,
+    affordanceName: match.affordance.name,
+    description: match.affordance.description ?? match.affordance.name,
+    until: now + objectUseDurationMs(request.durationMs, match.affordance.defaultDurationMs),
+  };
+  if (match.affordance.emoji) {
+    nextUse.emoji = match.affordance.emoji;
+  }
+  delete player.activity;
+  player.objectUse = nextUse;
+  return nextUse;
+}
+
 export const playerInputs = {
   join: inputHandler({
     args: {
@@ -355,6 +429,20 @@ export const playerInputs = {
         stopPlayer(player);
       }
       return null;
+    },
+  }),
+  useObject: inputHandler({
+    args: {
+      playerId,
+      ...useObjectRequestFields,
+    },
+    handler: (game, now, args) => {
+      const playerId = parseGameId('players', args.playerId);
+      const player = game.world.players.get(playerId);
+      if (!player) {
+        throw new Error(`Invalid player ID ${playerId}`);
+      }
+      return startObjectUse(game, now, player, args);
     },
   }),
   stepPlayer: inputHandler({

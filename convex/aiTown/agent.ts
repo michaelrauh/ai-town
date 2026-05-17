@@ -27,6 +27,7 @@ import { distance, inBbox } from '../util/geometry';
 import { movePlayer } from './movement';
 import { insertInput } from './insertInput';
 import { Player } from './player';
+import { nearbyAffordancesForPosition, poiCenter } from './worldMap';
 
 function requireAgentPlayer(game: Game, agent: Agent) {
   const player = game.world.players.get(agent.playerId);
@@ -54,9 +55,11 @@ function shouldStartDoSomething(
   now: number,
 ) {
   const doingActivity = player.activity && player.activity.until > now;
+  const usingObject = player.objectUse && player.objectUse.until > now;
   return (
     !hasConversation &&
     !doingActivity &&
+    !usingObject &&
     (!player.pathfinding || !recentlyAttemptedInvite(agent, now))
   );
 }
@@ -106,8 +109,12 @@ export class Agent {
     }
 
     const doingActivity = player.activity && player.activity.until > now;
+    const usingObject = player.objectUse && player.objectUse.until > now;
     if (doingActivity && (conversation || player.pathfinding)) {
       player.activity!.until = now;
+    }
+    if (usingObject && (conversation || player.pathfinding)) {
+      player.objectUse!.until = now;
     }
     // If we're not in a conversation, do something.
     // If we aren't doing an activity or moving, do something.
@@ -124,10 +131,7 @@ export class Agent {
       // Deterministic walk: if the schedule says we should be somewhere we are not, just go there.
       if (scheduledPoi && !inBbox(player.position, scheduledPoi.bbox)) {
         if (!player.pathfinding) {
-          const target = {
-            x: Math.floor(scheduledPoi.bbox.x + scheduledPoi.bbox.w / 2),
-            y: Math.floor(scheduledPoi.bbox.y + scheduledPoi.bbox.h / 2),
-          };
+          const target = poiCenter(scheduledPoi);
           console.log(
             `Agent ${this.id} heading to scheduled POI ${scheduled!.poi} (block=${block}).`,
           );
@@ -142,6 +146,7 @@ export class Agent {
         otherFreePlayers: freeConversationCandidates(game, player),
         agent: this.serialize(),
         map: game.worldMap.serialize(),
+        nearbyAffordances: nearbyAffordancesForPosition(game.worldMap.pois, player.position),
         scheduledBlock: block,
         scheduledActivity: scheduled?.activity,
         scheduledPoi: scheduled?.poi,

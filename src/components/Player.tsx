@@ -65,6 +65,14 @@ export const Player = ({
     );
   const tileDim = game.worldMap.tileDim;
   const historicalFacing = { dx: historicalLocation.dx, dy: historicalLocation.dy };
+  const activeObjectUse =
+    player.objectUse && player.objectUse.until > (historicalTime ?? Date.now())
+      ? player.objectUse
+      : undefined;
+  const activeActivity =
+    player.activity && player.activity.until > (historicalTime ?? Date.now())
+      ? player.activity
+      : undefined;
   return (
     <>
       <Character
@@ -74,11 +82,7 @@ export const Player = ({
         isMoving={historicalLocation.speed > 0}
         isThinking={isThinking}
         isSpeaking={isSpeaking}
-        emoji={
-          player.activity && player.activity.until > (historicalTime ?? Date.now())
-            ? player.activity?.emoji
-            : undefined
-        }
+        emoji={activeObjectUse?.emoji ?? activeActivity?.emoji}
         isViewer={isViewer}
         textureUrl={character.textureUrl}
         spritesheetData={character.spritesheetData}

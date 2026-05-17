@@ -2,7 +2,8 @@ import { Id } from '../_generated/dataModel';
 import { queryPath } from '../util/types';
 import { Game } from './game';
 import { findRoute, movementSpeedForPlayer } from './movement';
-import { playerInputs } from './player';
+import { Player, playerInputs } from './player';
+import type { Poi } from './worldMap';
 
 function openLayer(width: number, height: number) {
   return Array.from({ length: width }, () => Array.from({ length: height }, () => -1));
@@ -16,6 +17,7 @@ function makeGame({
   blockedTiles = [],
   pathfinding = undefined,
   participating = false,
+  pois = [],
 }: {
   playerPosition?: { x: number; y: number };
   npcPosition?: { x: number; y: number };
@@ -24,6 +26,7 @@ function makeGame({
   blockedTiles?: Array<{ x: number; y: number }>;
   pathfinding?: any;
   participating?: boolean;
+  pois?: Poi[];
 } = {}) {
   const layer = openLayer(width, height);
   for (const tile of blockedTiles) {
@@ -92,10 +95,82 @@ function makeGame({
         bgTiles: [],
         objectTiles: [layer],
         animatedSprites: [],
+        pois,
       },
     },
   );
 }
+
+describe('Player.join home spawn', () => {
+  test('places a new player at the center of a known home POI', () => {
+    const game = makeGame({
+      width: 10,
+      height: 10,
+      playerPosition: { x: 0, y: 0 },
+      npcPosition: { x: 9, y: 9 },
+      pois: [
+        {
+          id: 'home',
+          name: 'Home',
+          kind: 'home',
+          bbox: { x: 4, y: 4, w: 4, h: 4 },
+          description: 'A home.',
+        },
+      ],
+    });
+
+    const playerId = Player.join(game, 100, 'New NPC', 'f1', 'A new NPC.', undefined, 'home');
+
+    expect(game.world.players.get(playerId)?.position).toEqual({ x: 6, y: 6 });
+  });
+
+  test('falls back to random placement when the home is missing', () => {
+    const originalRandom = Math.random;
+    Math.random = () => 0;
+    const game = makeGame({
+      width: 5,
+      height: 5,
+      playerPosition: { x: 2, y: 2 },
+      npcPosition: { x: 3, y: 3 },
+    });
+
+    try {
+      const playerId = Player.join(game, 100, 'New NPC', 'f1', 'A new NPC.', undefined, 'missing');
+
+      expect(game.world.players.get(playerId)?.position).toEqual({ x: 0, y: 0 });
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+
+  test('falls back to random placement when the home center is blocked', () => {
+    const originalRandom = Math.random;
+    Math.random = () => 0;
+    const game = makeGame({
+      width: 5,
+      height: 5,
+      playerPosition: { x: 1, y: 1 },
+      npcPosition: { x: 3, y: 3 },
+      pois: [
+        {
+          id: 'home',
+          name: 'Home',
+          kind: 'home',
+          bbox: { x: 0, y: 0, w: 3, h: 3 },
+          description: 'A blocked home.',
+        },
+      ],
+    });
+
+    try {
+      const playerId = Player.join(game, 100, 'New NPC', 'f1', 'A new NPC.', undefined, 'home');
+
+      expect(game.world.players.get(playerId)?.position).toEqual({ x: 0, y: 0 });
+    } finally {
+      Math.random = originalRandom;
+    }
+  });
+});
 
 describe('playerInputs.stepPlayer', () => {
   test('moves exactly one tile in a valid direction', () => {
@@ -175,6 +250,89 @@ describe('playerInputs.stepPlayer', () => {
     expect(() =>
       playerInputs.stepPlayer.handler(game, 100, { playerId: 'p:1', direction: 'east' }),
     ).toThrowError("Can't move when in a conversation. Leave the conversation first!");
+  });
+});
+
+describe('playerInputs.useObject', () => {
+  test('starts object-use state for a nearby affordance', () => {
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [
+        {
+          id: 'coffee-shop',
+          name: 'Coffee Shop',
+          kind: 'shop',
+          bbox: { x: 2, y: 2, w: 3, h: 3 },
+          description: 'A coffee shop.',
+          subObjects: [
+            {
+              id: 'counter',
+              name: 'Counter',
+              affordances: [
+                {
+                  id: 'make-coffee',
+                  name: 'Make coffee',
+                  emoji: '☕',
+                  defaultDurationMs: 30_000,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = playerInputs.useObject.handler(game, 1000, {
+      playerId: 'p:1',
+      objectRef: 'coffee-shop/counter',
+      affordanceId: 'make-coffee',
+    });
+
+    expect(result.description).toBe('Make coffee');
+    expect(game.world.players.get('p:1' as any)?.objectUse).toMatchObject({
+      objectRef: 'coffee-shop/counter',
+      objectName: 'Counter',
+      affordanceId: 'make-coffee',
+      affordanceName: 'Make coffee',
+      emoji: '☕',
+      until: 31_000,
+    });
+  });
+
+  test('rejects object use when the player is outside the POI', () => {
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 0, y: 0 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [
+        {
+          id: 'coffee-shop',
+          name: 'Coffee Shop',
+          kind: 'shop',
+          bbox: { x: 2, y: 2, w: 3, h: 3 },
+          description: 'A coffee shop.',
+          subObjects: [
+            {
+              id: 'counter',
+              name: 'Counter',
+              affordances: [{ id: 'make-coffee', name: 'Make coffee' }],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(() =>
+      playerInputs.useObject.handler(game, 1000, {
+        playerId: 'p:1',
+        objectRef: 'coffee-shop/counter',
+        affordanceId: 'make-coffee',
+      }),
+    ).toThrowError('Player p:1 is not near Coffee Shop');
   });
 });
 

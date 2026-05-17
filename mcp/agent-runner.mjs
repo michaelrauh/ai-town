@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 
 import dotenv from 'dotenv';
-import { callTool, readResource, resetConvexClient, runnerPaused } from './server.mjs';
+import { pathToFileURL } from 'node:url';
+import {
+  callTool as serverCallTool,
+  readResource as serverReadResource,
+  resetConvexClient,
+  runnerPaused,
+} from './server.mjs';
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
@@ -11,6 +17,11 @@ const OPENAI_CHAT_MODEL = process.env.OPENAI_CHAT_MODEL ?? 'gpt-4o-mini';
 const LOOP_INTERVAL_MS = Number(process.env.MCP_AGENT_RUNNER_INTERVAL_MS ?? 1000);
 const CONVEX_CALL_TIMEOUT_MS = Number(process.env.MCP_CONVEX_TIMEOUT_MS ?? 30_000);
 const OPERATION_TIMEOUT_MS = Number(process.env.MCP_OPERATION_TIMEOUT_MS ?? 90_000);
+const GAME_DAY_MS = 10 * 60_000;
+const SCHEDULE_BLOCKS = ['morning', 'midday', 'afternoon', 'evening', 'night'];
+const NEARBY_PLAYER_DISTANCE_TILES = 6;
+const MEMORY_SEARCH_LIMIT = 3;
+const MAX_CONTEXT_MEMORIES = 8;
 
 const WIPE_RACE_PATTERNS = [
   'mcp agent operation',
@@ -102,21 +113,21 @@ async function llmSchema(messages, schema, schemaName) {
 }
 
 async function pendingOperations() {
-  return resourceJson(await readResource('aitown://agent-operations/pending'));
+  return resourceJson(await serverReadResource('aitown://agent-operations/pending'));
 }
 
 async function worldSnapshot(worldId) {
-  return resourceJson(await readResource(`aitown://world/${worldId}/snapshot`));
+  return resourceJson(await serverReadResource(`aitown://world/${worldId}/snapshot`));
 }
 
 async function conversationMessages(worldId, conversationId) {
   return resourceJson(
-    await readResource(`aitown://conversation/${worldId}/${conversationId}/messages`),
+    await serverReadResource(`aitown://conversation/${worldId}/${conversationId}/messages`),
   );
 }
 
 async function recentMemories(worldId, playerId) {
-  return resourceJson(await readResource(`aitown://memories/${worldId}/${playerId}/recent`));
+  return resourceJson(await serverReadResource(`aitown://memories/${worldId}/${playerId}/recent`));
 }
 
 function buildSelfFacts(snapshot, playerId, agentId) {
@@ -137,12 +148,283 @@ function buildSelfFacts(snapshot, playerId, agentId) {
   };
 }
 
-function doSomethingSchema(args) {
+function gameTimeOfDay(now) {
+  const fractionOfDay = (((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS) / GAME_DAY_MS;
+  const idx = Math.min(
+    SCHEDULE_BLOCKS.length - 1,
+    Math.floor(fractionOfDay * SCHEDULE_BLOCKS.length),
+  );
+  return SCHEDULE_BLOCKS[idx];
+}
+
+function inBbox(position, bbox) {
+  return (
+    position.x >= bbox.x &&
+    position.y >= bbox.y &&
+    position.x < bbox.x + bbox.w &&
+    position.y < bbox.y + bbox.h
+  );
+}
+
+function distance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function playerDescription(snapshot, playerId) {
+  return snapshot.playerDescriptions.find((d) => d.playerId === playerId) ?? null;
+}
+
+function agentDescriptionForPlayer(snapshot, playerId) {
+  const agent = snapshot.world.agents.find((a) => a.playerId === playerId);
+  if (!agent) {
+    return null;
+  }
+  return snapshot.agentDescriptions.find((d) => d.agentId === agent.id) ?? null;
+}
+
+function currentPoiForPosition(pois, position) {
+  return (pois ?? []).find((p) => inBbox(position, p.bbox)) ?? null;
+}
+
+function objectRefFor(poiId, objectPath) {
+  return [poiId, ...objectPath].join('/');
+}
+
+function collectAffordances(poi, objects, path = []) {
+  const result = [];
+  for (const object of objects ?? []) {
+    const objectPath = [...path, object.id];
+    const objectRef = objectRefFor(poi.id, objectPath);
+    for (const affordance of object.affordances ?? []) {
+      result.push({
+        id: `${objectRef}#${affordance.id}`,
+        poiId: poi.id,
+        poiName: poi.name,
+        objectRef,
+        objectPath,
+        objectName: object.name,
+        affordanceId: affordance.id,
+        affordanceName: affordance.name,
+        description: affordance.description ?? null,
+        emoji: affordance.emoji ?? null,
+        defaultDurationMs: affordance.defaultDurationMs ?? null,
+      });
+    }
+    result.push(...collectAffordances(poi, object.subObjects, objectPath));
+  }
+  return result;
+}
+
+export function nearbyAffordancesForPosition(worldMap, position) {
+  const currentPoi = currentPoiForPosition(worldMap?.pois ?? [], position);
+  if (!currentPoi) {
+    return [];
+  }
+  return collectAffordances(currentPoi, currentPoi.subObjects);
+}
+
+function conversationForPlayer(snapshot, playerId) {
+  return (
+    snapshot.world.conversations.find((conversation) =>
+      conversation.participants.some((p) => p.playerId === playerId),
+    ) ?? null
+  );
+}
+
+function conversationState(snapshot, playerId) {
+  const conversation = conversationForPlayer(snapshot, playerId);
+  if (!conversation) {
+    return null;
+  }
+  const participant = conversation.participants.find((p) => p.playerId === playerId);
+  return {
+    id: conversation.id,
+    status: participant?.status ?? null,
+    participantIds: conversation.participants.map((p) => p.playerId),
+    lastMessage: conversation.lastMessage ?? null,
+    numMessages: conversation.numMessages ?? 0,
+  };
+}
+
+function activeUntil(item, now) {
+  return item && item.until > now ? item : null;
+}
+
+function playerState(snapshot, player, now) {
+  return {
+    activity: activeUntil(player.activity, now),
+    objectUse: activeUntil(player.objectUse, now),
+    pathfindingDestination: player.pathfinding?.destination ?? null,
+    conversation: conversationState(snapshot, player.id),
+    lastInput: player.lastInput ?? null,
+  };
+}
+
+function nearbyPlayers(snapshot, player, currentPoi, now) {
+  const players = snapshot.world.players ?? [];
+  return players
+    .filter((other) => other.id !== player.id)
+    .filter((other) => {
+      if (currentPoi && inBbox(other.position, currentPoi.bbox)) {
+        return true;
+      }
+      return distance(player.position, other.position) <= NEARBY_PLAYER_DISTANCE_TILES;
+    })
+    .map((other) => {
+      const desc = playerDescription(snapshot, other.id);
+      const agentDesc = agentDescriptionForPlayer(snapshot, other.id);
+      return {
+        id: other.id,
+        name: desc?.name ?? other.id,
+        description: desc?.description ?? null,
+        isHuman: !!other.human,
+        position: other.position,
+        profession: agentDesc?.profession ?? null,
+        homeName: agentDesc?.homeName ?? null,
+        state: playerState(snapshot, other, now),
+      };
+    });
+}
+
+function compactPoi(poi) {
+  if (!poi) {
+    return null;
+  }
+  return {
+    id: poi.id,
+    name: poi.name,
+    kind: poi.kind,
+    description: poi.description,
+    bbox: poi.bbox,
+  };
+}
+
+function normalizeMessages(messages) {
+  return (messages ?? []).map((message) => ({
+    authorName: message.authorName ?? message.author ?? null,
+    text: message.text,
+  }));
+}
+
+export function dedupeMemories(memoryLists, max = MAX_CONTEXT_MEMORIES) {
+  const seen = new Set();
+  const result = [];
+  for (const memory of memoryLists.flat()) {
+    if (!memory || seen.has(memory.id)) {
+      continue;
+    }
+    seen.add(memory.id);
+    result.push(memory);
+    if (result.length >= max) {
+      break;
+    }
+  }
+  return result;
+}
+
+export function buildAgentContext(snapshot, args, extras = {}) {
+  const player = args.player ?? findById(snapshot.world.players, args.playerId, 'player');
+  const agent = args.agent ?? snapshot.world.agents.find((a) => a.playerId === player.id);
+  const agentId = args.agentId ?? agent?.id;
+  if (!agentId) {
+    throw new Error(`Missing agent for player ${player.id}`);
+  }
+  const self = buildSelfFacts(snapshot, player.id, agentId);
+  const now = snapshot.engine?.currentTime ?? Date.now();
+  const block = args.scheduledBlock ?? gameTimeOfDay(now);
+  const scheduled = self.schedule.find((s) => s.block === block) ?? null;
+  const scheduledPoi = scheduled
+    ? ((snapshot.worldMap.pois ?? []).find((p) => p.id === scheduled.poi) ?? null)
+    : null;
+  const currentPoi = currentPoiForPosition(snapshot.worldMap.pois ?? [], player.position);
+  const nearbyAffordances = nearbyAffordancesForPosition(snapshot.worldMap, player.position);
+  return {
+    self,
+    currentTime: now,
+    position: player.position,
+    currentPoi: compactPoi(currentPoi),
+    schedule: {
+      currentBlock: block,
+      scheduledActivity: args.scheduledActivity ?? scheduled?.activity ?? null,
+      scheduledPoi: args.scheduledPoi ?? scheduled?.poi ?? null,
+      atScheduledPoi:
+        args.atScheduledPoi ?? !!(scheduledPoi && inBbox(player.position, scheduledPoi.bbox)),
+    },
+    surroundings: {
+      nearbyAffordances,
+      nearbyPlayers: nearbyPlayers(snapshot, player, currentPoi, now),
+      map: {
+        width: snapshot.worldMap.width,
+        height: snapshot.worldMap.height,
+      },
+    },
+    state: playerState(snapshot, player, now),
+    recentConversationMessages: normalizeMessages(extras.recentConversationMessages),
+    relatedMemories: extras.relatedMemories ?? [],
+  };
+}
+
+function memoryQueriesForContext(context, recipientName) {
+  const queries = [];
+  if (recipientName) {
+    queries.push(`Conversation with ${recipientName}`);
+  }
+  if (context.currentPoi?.name) {
+    queries.push(`At ${context.currentPoi.name}`, context.currentPoi.name);
+  }
+  for (const player of context.surroundings.nearbyPlayers) {
+    if (player.name && player.name !== recipientName) {
+      queries.push(`Conversation with ${player.name}`);
+    }
+  }
+  return [...new Set(queries)].slice(0, 5);
+}
+
+async function fetchContextMemories(context, playerId, deps, recipientName) {
+  const queries = memoryQueriesForContext(context, recipientName);
+  const memoryLists = await Promise.all(
+    queries.map(async (query) => {
+      const text = mcpText(
+        await deps.callTool('aitown.search_memories', {
+          playerId,
+          query,
+          limit: MEMORY_SEARCH_LIMIT,
+        }),
+      );
+      return JSON.parse(text);
+    }),
+  );
+  return dedupeMemories(memoryLists);
+}
+
+function defaultDeps() {
+  return {
+    callTool: serverCallTool,
+    llmSchema,
+    conversationMessages,
+    recentMemories,
+  };
+}
+
+function doSomethingSchema(args, context) {
   const freeIds = args.otherFreePlayers.map((p) => p.id);
   const hasFree = freeIds.length > 0;
-  const actionEnum = hasFree ? ['wander', 'activity', 'invite'] : ['wander', 'activity'];
+  const nearbyAffordanceIds = context.surroundings.nearbyAffordances.map((a) => a.id);
+  const hasAffordances = nearbyAffordanceIds.length > 0;
+  const actionEnum = ['wander', 'activity'];
+  if (hasFree) {
+    actionEnum.push('invite');
+  }
+  if (hasAffordances) {
+    actionEnum.push('useObject');
+  }
   const inviteeProperty = hasFree
     ? { anyOf: [{ type: 'string', enum: freeIds }, { type: 'null' }] }
+    : { type: 'null' };
+  const useObjectProperty = hasAffordances
+    ? { anyOf: [{ type: 'string', enum: nearbyAffordanceIds }, { type: 'null' }] }
     : { type: 'null' };
   return {
     type: 'object',
@@ -154,49 +436,47 @@ function doSomethingSchema(args) {
       emoji: { type: ['string', 'null'] },
       durationMs: { type: ['integer', 'null'] },
       invitee: inviteeProperty,
+      useObject: useObjectProperty,
     },
-    required: ['action', 'x', 'y', 'description', 'emoji', 'durationMs', 'invitee'],
+    required: ['action', 'x', 'y', 'description', 'emoji', 'durationMs', 'invitee', 'useObject'],
     additionalProperties: false,
   };
 }
 
-async function handleDoSomething(operation, snapshot) {
+export async function handleDoSomething(operation, snapshot, deps = defaultDeps()) {
   const args = operation.args;
-  const schema = doSomethingSchema(args);
-  const self = buildSelfFacts(snapshot, args.player.id, args.agent.id);
-  const decision = await llmSchema(
+  const baseContext = buildAgentContext(snapshot, args);
+  const relatedMemories = await fetchContextMemories(baseContext, args.player.id, deps);
+  const currentContext = buildAgentContext(snapshot, args, { relatedMemories });
+  const schema = doSomethingSchema(args, currentContext);
+  const nearbyAffordances = currentContext.surroundings.nearbyAffordances;
+  const decision = await deps.llmSchema(
     [
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, or invite. Fill the fields for the chosen action and set the others to null. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. Use your character facts (profession, home, family, friends, daily schedule) to make a choice in character. Prefer doing your scheduled activity if you are at the scheduled location.',
+          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, or useObject. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. Use your character facts, schedule, surroundings, memories, and current state to make a choice in character. Prefer place-appropriate object affordances when they match the scheduled activity.',
       },
       {
         role: 'user',
         content: JSON.stringify({
-          self,
-          position: args.player.position,
-          currentBlock: args.scheduledBlock,
-          scheduledActivity: args.scheduledActivity ?? null,
-          scheduledPoi: args.scheduledPoi ?? null,
-          atScheduledPoi: !!args.atScheduledPoi,
+          currentContext,
           otherFreePlayers: args.otherFreePlayers.map((p) => {
             const desc = snapshot.playerDescriptions.find((d) => d.playerId === p.id);
             return { id: p.id, name: desc?.name, position: p.position };
           }),
-          map: { width: args.map.width, height: args.map.height },
         }),
       },
     ],
     schema,
     'do_something_decision',
   );
-  const { action, x, y, description, emoji, durationMs, invitee } = decision;
+  const { action, x, y, description, emoji, durationMs, invitee, useObject } = decision;
   if (action === 'wander') {
     if (x == null || y == null) {
       throw new Error('wander action missing x or y');
     }
-    await callTool('aitown.do_wander', {
+    await deps.callTool('aitown.do_wander', {
       worldId: operation.worldId,
       agentId: args.agent.id,
       operationId: operation.operationId,
@@ -207,7 +487,7 @@ async function handleDoSomething(operation, snapshot) {
     if (!description || durationMs == null) {
       throw new Error('activity action missing description or durationMs');
     }
-    await callTool('aitown.do_activity', {
+    await deps.callTool('aitown.do_activity', {
       worldId: operation.worldId,
       agentId: args.agent.id,
       operationId: operation.operationId,
@@ -219,29 +499,52 @@ async function handleDoSomething(operation, snapshot) {
     if (!invitee) {
       throw new Error('invite action missing invitee');
     }
-    await callTool('aitown.do_invite', {
+    await deps.callTool('aitown.do_invite', {
       worldId: operation.worldId,
       agentId: args.agent.id,
       operationId: operation.operationId,
       invitee,
+    });
+  } else if (action === 'useObject') {
+    if (!useObject) {
+      throw new Error('useObject action missing selected affordance');
+    }
+    const selected = nearbyAffordances.find((item) => item.id === useObject);
+    if (!selected) {
+      throw new Error(`useObject action selected unavailable affordance ${useObject}`);
+    }
+    await deps.callTool('aitown.do_use_object', {
+      worldId: operation.worldId,
+      agentId: args.agent.id,
+      operationId: operation.operationId,
+      objectRef: selected.objectRef,
+      affordanceId: selected.affordanceId,
+      durationMs: durationMs ?? selected.defaultDurationMs,
     });
   } else {
     throw new Error(`agentDoSomething: unexpected action ${action}`);
   }
 }
 
-async function handleInvite(operation, snapshot) {
+export async function handleInvite(operation, snapshot, deps = defaultDeps()) {
   const args = operation.args;
   let chosen;
   if (args.otherPlayerIsHuman) {
     chosen = 'accept';
   } else {
-    const self = buildSelfFacts(snapshot, args.playerId, args.agentId);
     const otherDescription = findById(
       snapshot.playerDescriptions,
       args.otherPlayerId,
       'other player description',
     );
+    const baseContext = buildAgentContext(snapshot, args);
+    const relatedMemories = await fetchContextMemories(
+      baseContext,
+      args.playerId,
+      deps,
+      otherDescription.name,
+    );
+    const currentContext = buildAgentContext(snapshot, args, { relatedMemories });
     const schema = {
       type: 'object',
       properties: {
@@ -250,20 +553,22 @@ async function handleInvite(operation, snapshot) {
       required: ['action'],
       additionalProperties: false,
     };
-    const decision = await llmSchema(
+    const decision = await deps.llmSchema(
       [
         {
           role: 'system',
           content:
-            'You are an NPC in AI Town who just received a conversation invite. Decide accept or reject and return JSON matching the schema. Lean on your character facts (especially family and friends) to decide.',
+            'You are an NPC in AI Town who just received a conversation invite. Decide accept or reject and return JSON matching the schema. Treat currentContext as factual. Lean on your character facts, relationships, memories, schedule, current state, and surroundings to decide.',
         },
         {
           role: 'user',
           content: JSON.stringify({
-            self,
+            currentContext,
             inviter: otherDescription,
-            inviterIsFriend: self.friends.includes(otherDescription.name),
-            inviterIsFamily: self.family.some((f) => f.name === otherDescription.name),
+            inviterIsFriend: currentContext.self.friends.includes(otherDescription.name),
+            inviterIsFamily: currentContext.self.family.some(
+              (f) => f.name === otherDescription.name,
+            ),
           }),
         },
       ],
@@ -275,7 +580,7 @@ async function handleInvite(operation, snapshot) {
     }
     chosen = decision.action;
   }
-  await callTool(`aitown.handle_invite_${chosen}`, {
+  await deps.callTool(`aitown.handle_invite_${chosen}`, {
     worldId: operation.worldId,
     agentId: args.agentId,
     operationId: operation.operationId,
@@ -284,7 +589,7 @@ async function handleInvite(operation, snapshot) {
   });
 }
 
-async function handleGenerateMessage(operation, snapshot) {
+export async function handleGenerateMessage(operation, snapshot, deps = defaultDeps()) {
   const args = operation.args;
   const otherPlayer = findById(snapshot.world.players, args.otherPlayerId, 'other player');
   const otherDescription = findById(
@@ -292,17 +597,22 @@ async function handleGenerateMessage(operation, snapshot) {
     args.otherPlayerId,
     'other player description',
   );
-  const self = buildSelfFacts(snapshot, args.playerId, args.agentId);
-  const messages = await conversationMessages(args.worldId, args.conversationId);
-  const memoryText = mcpText(
-    await callTool('aitown.search_memories', {
-      playerId: args.playerId,
-      query: `Conversation with ${otherDescription.name}`,
-      limit: 3,
-    }),
+  const messages = await deps.conversationMessages(args.worldId, args.conversationId);
+  const baseContext = buildAgentContext(snapshot, args, { recentConversationMessages: messages });
+  const relatedMemories = await fetchContextMemories(
+    baseContext,
+    args.playerId,
+    deps,
+    otherDescription.name,
   );
-  const recipientIsFriend = self.friends.includes(otherDescription.name);
-  const recipientIsFamily = self.family.find((f) => f.name === otherDescription.name);
+  const currentContext = buildAgentContext(snapshot, args, {
+    recentConversationMessages: messages,
+    relatedMemories,
+  });
+  const recipientIsFriend = currentContext.self.friends.includes(otherDescription.name);
+  const recipientIsFamily = currentContext.self.family.find(
+    (f) => f.name === otherDescription.name,
+  );
   const verb =
     args.type === 'leave'
       ? 'politely end the conversation'
@@ -317,17 +627,17 @@ async function handleGenerateMessage(operation, snapshot) {
     required: ['text'],
     additionalProperties: false,
   };
-  const decision = await llmSchema(
+  const decision = await deps.llmSchema(
     [
       {
         role: 'system',
-        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Answer direct questions directly and follow the other speaker's topic. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
+        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Treat currentContext as factual. Answer direct questions directly and follow the other speaker's topic. If asked about nearby objects, answer only from currentContext.surroundings.nearbyAffordances. Do not invent map objects, places, people, memories, or prior actions. If currentContext has no matching facts, say so naturally in character. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
       },
       {
         role: 'user',
         content: JSON.stringify({
           task: verb,
-          self,
+          currentContext,
           recipient: {
             id: otherPlayer.id,
             name: otherDescription.name,
@@ -337,18 +647,13 @@ async function handleGenerateMessage(operation, snapshot) {
             familyRelation: recipientIsFamily ? recipientIsFamily.kind : null,
           },
           messageType: args.type,
-          recentMessages: messages.map((message) => ({
-            authorName: message.authorName,
-            text: message.text,
-          })),
-          relatedMemories: JSON.parse(memoryText),
         }),
       },
     ],
     schema,
     'message',
   );
-  await callTool('aitown.compose_message', {
+  await deps.callTool('aitown.compose_message', {
     worldId: operation.worldId,
     conversationId: args.conversationId,
     agentId: args.agentId,
@@ -359,12 +664,13 @@ async function handleGenerateMessage(operation, snapshot) {
   });
 }
 
-async function handleReflect(operation) {
+export async function handleReflect(operation, snapshot, deps = defaultDeps()) {
   const args = operation.args;
-  const { name, memories } = await recentMemories(args.worldId, args.playerId);
+  const { name, memories } = await deps.recentMemories(args.worldId, args.playerId);
+  const currentContext = snapshot ? buildAgentContext(snapshot, args) : null;
   if (!memories || memories.length === 0) {
     // Nothing to reflect on yet; just finish the op.
-    await callTool('aitown.save_reflections', {
+    await deps.callTool('aitown.save_reflections', {
       worldId: args.worldId,
       agentId: args.agentId,
       playerId: args.playerId,
@@ -393,17 +699,18 @@ async function handleReflect(operation) {
     required: ['reflections'],
     additionalProperties: false,
   };
-  const result = await llmSchema(
+  const result = await deps.llmSchema(
     [
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC who just finished a conversation. Look at recent statements and produce up to 3 high-level insights about yourself, others, or the town. Each insight cites the statementIds it draws from. Importance is 1 (trivial) to 10 (life-changing).',
+          'You are roleplaying an NPC who just finished a conversation. Treat currentContext as factual when present. Look at recent statements and produce up to 3 high-level insights about yourself, others, or the town. Each insight cites the statementIds it draws from. Importance is 1 (trivial) to 10 (life-changing).',
       },
       {
         role: 'user',
         content: JSON.stringify({
           you: name,
+          currentContext,
           statements: memories.map((m, idx) => ({
             id: idx,
             text: m.description,
@@ -425,7 +732,7 @@ async function handleReflect(operation) {
         .map((i) => memories[i].id),
     }))
     .filter((r) => r.description && r.description.length > 0);
-  await callTool('aitown.save_reflections', {
+  await deps.callTool('aitown.save_reflections', {
     worldId: args.worldId,
     agentId: args.agentId,
     playerId: args.playerId,
@@ -437,7 +744,7 @@ async function handleReflect(operation) {
 async function tryFailOperation(operationId, error) {
   try {
     await withTimeout(
-      callTool('aitown.fail_agent_operation', {
+      serverCallTool('aitown.fail_agent_operation', {
         operationId,
         error: error instanceof Error ? error.message : String(error),
       }),
@@ -453,7 +760,7 @@ async function tryFailOperation(operationId, error) {
 
 async function processOperation(operation) {
   await withTimeout(
-    callTool('aitown.claim_agent_operation', { operationId: operation.operationId }),
+    serverCallTool('aitown.claim_agent_operation', { operationId: operation.operationId }),
     CONVEX_CALL_TIMEOUT_MS,
     'claim_agent_operation',
   );
@@ -464,7 +771,7 @@ async function processOperation(operation) {
       'worldSnapshot',
     );
     if (operation.name === 'agentRememberConversation') {
-      await callTool('aitown.remember_conversation', operation.args);
+      await serverCallTool('aitown.remember_conversation', operation.args);
     } else if (operation.name === 'agentGenerateMessage') {
       await handleGenerateMessage(operation, snapshot);
     } else if (operation.name === 'agentDoSomething') {
@@ -472,12 +779,12 @@ async function processOperation(operation) {
     } else if (operation.name === 'agentHandleInvite') {
       await handleInvite(operation, snapshot);
     } else if (operation.name === 'agentReflect') {
-      await handleReflect(operation);
+      await handleReflect(operation, snapshot);
     } else {
       throw new Error(`Unknown MCP agent operation: ${operation.name}`);
     }
     await withTimeout(
-      callTool('aitown.complete_agent_operation', { operationId: operation.operationId }),
+      serverCallTool('aitown.complete_agent_operation', { operationId: operation.operationId }),
       CONVEX_CALL_TIMEOUT_MS,
       'complete_agent_operation',
     );
@@ -506,11 +813,7 @@ async function main() {
   requireConfig();
   while (true) {
     try {
-      const paused = await withTimeout(
-        runnerPaused(),
-        CONVEX_CALL_TIMEOUT_MS,
-        'runnerPaused',
-      );
+      const paused = await withTimeout(runnerPaused(), CONVEX_CALL_TIMEOUT_MS, 'runnerPaused');
       if (paused) {
         await sleep(LOOP_INTERVAL_MS);
         continue;
@@ -528,4 +831,10 @@ async function main() {
   }
 }
 
-void main();
+function isMainModule() {
+  return !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+}
+
+if (isMainModule()) {
+  void main();
+}

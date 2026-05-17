@@ -16,6 +16,8 @@ import { useServerGame } from '../hooks/serverGame.ts';
 import { waitForInput } from '../hooks/sendInput.ts';
 import { toast } from 'react-toastify';
 import { DEFAULT_NAME } from '../../convex/constants.ts';
+import Button from './buttons/Button.tsx';
+import GameStateWindow from './GameStateWindow.tsx';
 
 export const SHOW_DEBUG_UI = !!import.meta.env.VITE_SHOW_DEBUG_UI;
 
@@ -28,6 +30,7 @@ export default function Game() {
     kind: 'player';
     id: GameId<'players'>;
   }>();
+  const [showStateWindow, setShowStateWindow] = useState(false);
   const [gameWrapperRef, { width, height }] = useElementSize();
 
   const worldStatus = useQuery(api.world.defaultWorldStatus);
@@ -100,9 +103,33 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
         </ConvexProvider>
       </Stage>
       <Minimap game={game} humanPlayerId={humanPlayer?.id} />
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-col items-start gap-2">
         <PauseMenu />
+        <Button
+          imgUrl="/assets/help.svg"
+          title="Open live world state, character perception, and memories."
+          onClick={(event) => {
+            event.preventDefault();
+            setShowStateWindow((open) => !open);
+          }}
+        >
+          State
+        </Button>
       </div>
+      {showStateWindow && (
+        <div className="pointer-events-none absolute inset-0 z-20">
+          <div className="pointer-events-auto absolute bottom-3 left-1/2 top-3 w-[min(56rem,calc(100vw-1.5rem))] -translate-x-1/2 overflow-hidden border-8 border-brown-900 bg-brown-800/95 px-4 py-5 text-brown-100 shadow-2xl backdrop-blur-sm">
+            <GameStateWindow
+              worldId={worldId}
+              engineId={engineId}
+              game={game}
+              currentTime={historicalTime ?? worldState?.engine.currentTime ?? Date.now()}
+              initialPlayerId={selectedElement?.id ?? humanPlayer?.id}
+              onClose={() => setShowStateWindow(false)}
+            />
+          </div>
+        </div>
+      )}
       {showDetails && (
         <div className="pointer-events-none absolute inset-0 z-10">
           <div

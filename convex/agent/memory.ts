@@ -369,6 +369,47 @@ export const recentMemoriesForReflection = query({
   },
 });
 
+export const DEFAULT_INSPECTOR_MEMORY_LIMIT = 50;
+export const MAX_INSPECTOR_MEMORY_LIMIT = 100;
+
+export function normalizeInspectorMemoryLimit(limit: number | undefined) {
+  if (limit === undefined) {
+    return DEFAULT_INSPECTOR_MEMORY_LIMIT;
+  }
+  return Math.max(0, Math.min(MAX_INSPECTOR_MEMORY_LIMIT, Math.floor(limit)));
+}
+
+export function inspectorMemoryPayload(memory: Memory) {
+  return {
+    id: memory._id,
+    description: memory.description,
+    importance: memory.importance,
+    type: memory.data.type,
+    data: memory.data,
+    createdAt: memory._creationTime,
+    lastAccess: memory.lastAccess,
+  };
+}
+
+export const inspectorMemories = query({
+  args: { worldId: v.id('worlds'), playerId, limit: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const playerDescription = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId).eq('playerId', args.playerId))
+      .first();
+    const memories = await ctx.db
+      .query('memories')
+      .withIndex('playerId', (q) => q.eq('playerId', args.playerId))
+      .order('desc')
+      .take(normalizeInspectorMemoryLimit(args.limit));
+    return {
+      name: playerDescription?.name ?? null,
+      memories: memories.map(inspectorMemoryPayload),
+    };
+  },
+});
+
 export const mcpSaveReflections = action({
   args: {
     worldId: v.id('worlds'),

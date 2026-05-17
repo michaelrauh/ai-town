@@ -131,6 +131,10 @@ export default function PlayerDetails({
   //   [...inflightInputs.values()].find((i) => i.name === inputName) ? ' opacity-50' : '';
 
   const pendingSuffix = (s: string) => '';
+  const activeObjectUse =
+    player.objectUse && player.objectUse.until > Date.now() ? player.objectUse : undefined;
+  const activeActivity =
+    player.activity && player.activity.until > Date.now() ? player.activity : undefined;
   return (
     <>
       <div className="flex gap-4">
@@ -214,10 +218,10 @@ export default function PlayerDetails({
           </a>
         </>
       )}
-      {!playerConversation && player.activity && player.activity.until > Date.now() && (
+      {!playerConversation && (activeObjectUse || activeActivity) && (
         <div className="box flex-grow mt-6">
           <h2 className="bg-brown-700 text-base sm:text-lg text-center">
-            {player.activity.description}
+            {activeObjectUse?.description ?? activeActivity?.description}
           </h2>
         </div>
       )}

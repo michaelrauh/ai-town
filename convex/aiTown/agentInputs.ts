@@ -1,6 +1,6 @@
 import { v } from 'convex/values';
 import { agentId, conversationId, parseGameId } from './ids';
-import { Player, activity } from './player';
+import { Player, activity, startObjectUse, useObjectRequest } from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
@@ -62,6 +62,7 @@ export const agentInputs = {
       destination: v.optional(point),
       invitee: v.optional(v.id('players')),
       activity: v.optional(activity),
+      useObject: v.optional(useObjectRequest),
     },
     handler: (game, now, args) => {
       const agentId = parseGameId('agents', args.agentId);
@@ -91,7 +92,11 @@ export const agentInputs = {
         movePlayer(game, now, player, args.destination);
       }
       if (args.activity) {
+        delete player.objectUse;
         player.activity = args.activity;
+      }
+      if (args.useObject) {
+        startObjectUse(game, now, player, args.useObject);
       }
       return null;
     },
@@ -150,6 +155,8 @@ export const agentInputs = {
         description.name,
         description.character,
         description.identity,
+        undefined,
+        (description as any).homeName,
       );
       const agentId = game.allocId('agents');
       game.world.agents.set(

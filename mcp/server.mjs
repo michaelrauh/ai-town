@@ -196,6 +196,24 @@ export function tools() {
       },
     },
     {
+      name: 'aitown.do_use_object',
+      description:
+        'Decide the NPC will use a nearby object affordance. Only choose an objectRef and affordanceId from the listed nearby affordances. Atomically commits the agentDoSomething operation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worldId: { type: 'string' },
+          agentId: { type: 'string' },
+          operationId: { type: 'string' },
+          objectRef: { type: 'string' },
+          affordanceId: { type: 'string' },
+          durationMs: { type: 'integer', minimum: 5000, maximum: 600000 },
+        },
+        required: ['agentId', 'operationId', 'objectRef', 'affordanceId'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'aitown.handle_invite_accept',
       description:
         'Accept a pending conversation invite for an NPC. Atomically accepts and finishes the agentHandleInvite operation.',
@@ -373,6 +391,22 @@ export async function callTool(name, args) {
           invitee: args.invitee,
         }),
       );
+    case 'aitown.do_use_object': {
+      const useObject = {
+        objectRef: args.objectRef,
+        affordanceId: args.affordanceId,
+      };
+      if (args.durationMs !== undefined) {
+        useObject.durationMs = args.durationMs;
+      }
+      return textContent(
+        await sendInput(worldId, 'finishDoSomething', {
+          agentId: args.agentId,
+          operationId: args.operationId,
+          useObject,
+        }),
+      );
+    }
     case 'aitown.handle_invite_accept':
       await sendInput(worldId, 'acceptInvite', {
         playerId: args.playerId,

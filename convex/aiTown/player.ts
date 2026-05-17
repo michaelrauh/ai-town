@@ -271,20 +271,20 @@ export class Player {
   }
 }
 
-export function stepDestination(player: Player, direction: StepDirection): Point {
-  const position = {
-    x: Math.floor(player.position.x),
-    y: Math.floor(player.position.y),
+function stepDestinationFrom(position: Point, direction: StepDirection): Point {
+  const origin = {
+    x: Math.floor(position.x),
+    y: Math.floor(position.y),
   };
   switch (direction) {
     case 'north':
-      return { x: position.x, y: position.y - 1 };
+      return { x: origin.x, y: origin.y - 1 };
     case 'south':
-      return { x: position.x, y: position.y + 1 };
+      return { x: origin.x, y: origin.y + 1 };
     case 'east':
-      return { x: position.x + 1, y: position.y };
+      return { x: origin.x + 1, y: origin.y };
     case 'west':
-      return { x: position.x - 1, y: position.y };
+      return { x: origin.x - 1, y: origin.y };
     default: {
       const exhaustive: never = direction;
       throw new Error(`Invalid step direction: ${exhaustive}`);
@@ -292,15 +292,19 @@ export function stepDestination(player: Player, direction: StepDirection): Point
   }
 }
 
+export function stepDestination(player: Player, direction: StepDirection): Point {
+  return stepDestinationFrom(player.position, direction);
+}
+
 export function stepPlayer(game: Game, now: number, player: Player, direction: StepDirection) {
-  if (player.pathfinding) {
-    throw new Error(`Player ${player.id} is already moving`);
-  }
   const conversation = game.world.playerConversation(player);
   if (conversation?.participants.get(player.id)?.status.kind === 'participating') {
     throw new Error(`Can't move when in a conversation. Leave the conversation first!`);
   }
-  const destination = stepDestination(player, direction);
+  const destination = stepDestinationFrom(
+    player.pathfinding?.destination ?? player.position,
+    direction,
+  );
   const blockedReason = blocked(game, now, destination, player.id);
   if (blockedReason !== null) {
     throw new Error(`Can't step ${direction}: ${blockedReason}`);

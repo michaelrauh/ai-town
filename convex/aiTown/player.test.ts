@@ -1,5 +1,7 @@
 import { Id } from '../_generated/dataModel';
+import { queryPath } from '../util/types';
 import { Game } from './game';
+import { findRoute, movementSpeedForPlayer } from './movement';
 import { playerInputs } from './player';
 
 function openLayer(width: number, height: number) {
@@ -8,16 +10,22 @@ function openLayer(width: number, height: number) {
 
 function makeGame({
   playerPosition = { x: 1, y: 1 },
+  npcPosition = { x: 2, y: 2 },
+  width = 3,
+  height = 3,
   blockedTiles = [],
   pathfinding = undefined,
   participating = false,
 }: {
   playerPosition?: { x: number; y: number };
+  npcPosition?: { x: number; y: number };
+  width?: number;
+  height?: number;
   blockedTiles?: Array<{ x: number; y: number }>;
   pathfinding?: any;
   participating?: boolean;
 } = {}) {
-  const layer = openLayer(3, 3);
+  const layer = openLayer(width, height);
   for (const tile of blockedTiles) {
     layer[tile.x][tile.y] = 0;
   }
@@ -34,7 +42,7 @@ function makeGame({
     {
       id: 'p:2',
       lastInput: 0,
-      position: { x: 2, y: 2 },
+      position: npcPosition,
       facing: { dx: -1, dy: 0 },
       speed: 0,
     },
@@ -75,8 +83,8 @@ function makeGame({
       ],
       agentDescriptions: [],
       worldMap: {
-        width: 3,
-        height: 3,
+        width,
+        height,
         tileSetUrl: '',
         tileSetDimX: 0,
         tileSetDimY: 0,
@@ -129,14 +137,36 @@ describe('playerInputs.stepPlayer', () => {
     ).toThrowError('Invalid player ID p:404');
   });
 
-  test('rejects players that are already moving', () => {
+  test('extends held movement from the current path destination', () => {
     const game = makeGame({
+      width: 4,
+      npcPosition: { x: 0, y: 2 },
+      pathfinding: { destination: { x: 2, y: 1 }, started: 0, state: { kind: 'needsPath' } },
+    });
+
+    const destination = playerInputs.stepPlayer.handler(game, 100, {
+      playerId: 'p:1',
+      direction: 'east',
+    });
+
+    expect(destination).toEqual({ x: 3, y: 1 });
+    expect(game.world.players.get('p:1' as any)?.pathfinding?.destination).toEqual({
+      x: 3,
+      y: 1,
+    });
+  });
+
+  test('still rejects blocked destinations while extending held movement', () => {
+    const game = makeGame({
+      width: 4,
+      npcPosition: { x: 0, y: 2 },
+      blockedTiles: [{ x: 3, y: 1 }],
       pathfinding: { destination: { x: 2, y: 1 }, started: 0, state: { kind: 'needsPath' } },
     });
 
     expect(() =>
       playerInputs.stepPlayer.handler(game, 100, { playerId: 'p:1', direction: 'east' }),
-    ).toThrowError('Player p:1 is already moving');
+    ).toThrowError("Can't step east: world blocked");
   });
 
   test('rejects participating conversation members', () => {
@@ -158,5 +188,25 @@ describe('playerInputs.moveTo', () => {
       x: 2,
       y: 1,
     });
+  });
+});
+
+describe('movement speed split', () => {
+  test('routes human players faster than NPCs', () => {
+    const game = makeGame();
+    const human = game.world.players.get('p:1' as any)!;
+    const npc = game.world.players.get('p:2' as any)!;
+
+    const humanRoute = findRoute(game, 100, human, { x: 2, y: 1 });
+    const npcRoute = findRoute(game, 100, npc, { x: 1, y: 2 });
+
+    expect(movementSpeedForPlayer(human)).toBe(3.0);
+    expect(movementSpeedForPlayer(npc)).toBe(0.75);
+    expect(humanRoute && queryPath(humanRoute.path, humanRoute.path.length - 1).t).toBeCloseTo(
+      100 + 1000 / 3,
+    );
+    expect(npcRoute && queryPath(npcRoute.path, npcRoute.path.length - 1).t).toBeCloseTo(
+      100 + 1000 / 0.75,
+    );
   });
 });

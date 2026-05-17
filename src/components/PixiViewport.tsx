@@ -17,6 +17,22 @@ export type ViewportProps = {
   children?: ReactNode;
 };
 
+const MAX_ZOOM = 3.0;
+
+function minZoom(props: ViewportProps) {
+  if (props.worldWidth <= 0) {
+    return 1;
+  }
+  return Math.min(MAX_ZOOM, (1.04 * props.screenWidth) / (props.worldWidth / 2));
+}
+
+function configureBounds(viewport: Viewport, props: ViewportProps) {
+  viewport.clamp({ direction: 'all', underflow: 'center' }).clampZoom({
+    minScale: minZoom(props),
+    maxScale: MAX_ZOOM,
+  });
+}
+
 // https://davidfig.github.io/pixi-viewport/jsdoc/Viewport.html
 export default PixiComponent('Viewport', {
   create(props: ViewportProps) {
@@ -31,20 +47,17 @@ export default PixiComponent('Viewport', {
       viewportRef.current = viewport;
     }
     // Activate plugins
-    viewport
-      .drag()
-      .pinch({})
-      .wheel()
-      .decelerate()
-      .clamp({ direction: 'all', underflow: 'center' })
-      .setZoom(-10)
-      .clampZoom({
-        minScale: (1.04 * props.screenWidth) / (props.worldWidth / 2),
-        maxScale: 3.0,
-      });
+    viewport.drag().pinch({}).wheel({ smooth: 5, percent: 0.08, trackpadPinch: true }).decelerate();
+    configureBounds(viewport, props);
+    viewport.setZoom(Math.max(minZoom(props), Math.min(MAX_ZOOM, 2)), true);
     return viewport;
   },
   applyProps(viewport, oldProps: any, newProps: any) {
+    const resized =
+      oldProps.screenWidth !== newProps.screenWidth ||
+      oldProps.screenHeight !== newProps.screenHeight ||
+      oldProps.worldWidth !== newProps.worldWidth ||
+      oldProps.worldHeight !== newProps.worldHeight;
     Object.keys(newProps).forEach((p) => {
       if (p !== 'app' && p !== 'viewportRef' && p !== 'children' && oldProps[p] !== newProps[p]) {
         // @ts-expect-error Ignoring TypeScript here
@@ -52,5 +65,15 @@ export default PixiComponent('Viewport', {
         viewport[p] = newProps[p];
       }
     });
+    if (resized) {
+      viewport.resize(
+        newProps.screenWidth,
+        newProps.screenHeight,
+        newProps.worldWidth,
+        newProps.worldHeight,
+      );
+      configureBounds(viewport, newProps);
+      viewport.setZoom(Math.max(minZoom(newProps), Math.min(MAX_ZOOM, viewport.scale.x)), true);
+    }
   },
 });

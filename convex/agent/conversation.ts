@@ -182,15 +182,41 @@ export async function leaveConversationMessage(
   return trimContentPrefx(content, lastPrompt);
 }
 
+type PromptAgent = {
+  identity: string;
+  plan: string;
+  homeName?: string;
+  profession?: string;
+  family?: Array<{ kind: string; name: string }>;
+  friends?: string[];
+} | null;
+
 function agentPrompts(
   otherPlayer: { name: string },
-  agent: { identity: string; plan: string } | null,
-  otherAgent: { identity: string; plan: string } | null,
+  agent: PromptAgent,
+  otherAgent: PromptAgent,
 ): string[] {
   const prompt = [];
   if (agent) {
     prompt.push(`About you: ${agent.identity}`);
     prompt.push(`Your goals for the conversation: ${agent.plan}`);
+    if (agent.profession) {
+      prompt.push(`Your profession: ${agent.profession}`);
+    }
+    if (agent.homeName) {
+      prompt.push(`Your home: ${agent.homeName}`);
+    }
+    if (agent.family?.length) {
+      prompt.push(
+        `Your family in town: ${agent.family.map((f) => `${f.name} (${f.kind})`).join(', ')}.`,
+      );
+    }
+    if (agent.friends?.length) {
+      prompt.push(`Your friends in town: ${agent.friends.join(', ')}.`);
+    }
+    prompt.push(
+      `Conversation style: answer direct questions directly, follow the other speaker's topic, and bring up your core traits, work, beliefs, goals, family, or friends only when relevant or asked.`,
+    );
   }
   if (otherAgent) {
     prompt.push(`About ${otherPlayer.name}: ${otherAgent.identity}`);
@@ -334,10 +360,22 @@ export const queryPromptData = internalQuery({
       player: { name: playerDescription.name, ...player },
       otherPlayer: { name: otherPlayerDescription.name, ...otherPlayer },
       conversation,
-      agent: { identity: agentDescription.identity, plan: agentDescription.plan, ...agent },
+      agent: {
+        identity: agentDescription.identity,
+        plan: agentDescription.plan,
+        homeName: agentDescription.homeName,
+        profession: agentDescription.profession,
+        family: agentDescription.family,
+        friends: agentDescription.friends,
+        ...agent,
+      },
       otherAgent: otherAgent && {
         identity: otherAgentDescription!.identity,
         plan: otherAgentDescription!.plan,
+        homeName: otherAgentDescription!.homeName,
+        profession: otherAgentDescription!.profession,
+        family: otherAgentDescription!.family,
+        friends: otherAgentDescription!.friends,
         ...otherAgent,
       },
       lastConversation,

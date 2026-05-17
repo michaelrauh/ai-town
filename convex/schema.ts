@@ -25,6 +25,12 @@ export default defineSchema({
     paused: v.boolean(),
   }),
 
+  gameSaves: defineTable({
+    slot: v.string(),
+    storageId: v.string(),
+    savedAt: v.number(),
+  }).index('slot', ['slot']),
+
   ...agentTables,
   ...aiTownTables,
   ...engineTables,

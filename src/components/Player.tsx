@@ -14,6 +14,7 @@ import { ServerGame } from '../hooks/serverGame.ts';
 export type SelectElement = (element?: { kind: 'player'; id: GameId<'players'> }) => void;
 
 const logged = new Set<string>();
+const VIEWER_ANIMATION_SPEED_MULTIPLIER = 3;
 
 export const Player = ({
   game,
@@ -81,7 +82,7 @@ export const Player = ({
         isViewer={isViewer}
         textureUrl={character.textureUrl}
         spritesheetData={character.spritesheetData}
-        speed={character.speed}
+        speed={isViewer ? character.speed * VIEWER_ANIMATION_SPEED_MULTIPLIER : character.speed}
         onClick={() => {
           onClick({ kind: 'player', id: player.id });
         }}

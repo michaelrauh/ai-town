@@ -1,4 +1,3 @@
-import * as PIXI from 'pixi.js';
 import { useApp } from '@pixi/react';
 import { Player, SelectElement } from './Player.tsx';
 import { useEffect, useRef, useState } from 'react';
@@ -16,6 +15,8 @@ import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
 import type { StepDirection } from '../../convex/aiTown/player.ts';
+import { locationFields, playerLocation, type Location } from '../../convex/aiTown/location.ts';
+import { useHistoricalValue } from '../hooks/useHistoricalValue.ts';
 
 function isEditableKeyboardTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -45,6 +46,11 @@ function directionFromKey(key: string): StepDirection | null {
   }
 }
 
+const HELD_KEY_RETRY_MS = 50;
+const HELD_KEY_SUCCESS_DELAY_MS = 120;
+const HELD_STEP_PREFETCH_DISTANCE = 0.35;
+const CAMERA_FOLLOW_LERP = 0.18;
+
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
   engineId: Id<'engines'>;
@@ -63,9 +69,36 @@ export const PixiGame = (props: {
     (p) => p.human === humanTokenIdentifier,
   );
   const humanPlayerId = humanPlayer?.id;
+  const humanLocation = useHistoricalValue<Location>(
+    locationFields,
+    props.historicalTime,
+    humanPlayer ? playerLocation(humanPlayer) : undefined,
+    humanPlayer ? props.game.world.historicalLocations?.get(humanPlayer.id) : undefined,
+  );
 
   const moveTo = useSendInput(props.engineId, 'moveTo');
   const stepPlayer = useSendInput(props.engineId, 'stepPlayer');
+  const latestGameRef = useRef(props.game);
+  const latestHumanPlayerIdRef = useRef(humanPlayerId);
+  const latestHumanLocationRef = useRef(humanLocation);
+  const stepPlayerRef = useRef(stepPlayer);
+  const heldDirectionsRef = useRef<StepDirection[]>([]);
+  const stepInFlightRef = useRef(false);
+  const heldStepTimerRef = useRef<number | undefined>();
+  const heldErrorSuppressedRef = useRef(false);
+  const cameraTargetRef = useRef<{ x: number; y: number }>();
+  const cameraInitializedRef = useRef(false);
+
+  latestGameRef.current = props.game;
+  latestHumanPlayerIdRef.current = humanPlayerId;
+  latestHumanLocationRef.current = humanLocation;
+  stepPlayerRef.current = stepPlayer;
+  if (humanLocation) {
+    cameraTargetRef.current = {
+      x: humanLocation.x * props.game.worldMap.tileDim + props.game.worldMap.tileDim / 2,
+      y: humanLocation.y * props.game.worldMap.tileDim + props.game.worldMap.tileDim / 2,
+    };
+  }
 
   // Interaction for clicking on the world to navigate.
   const dragStart = useRef<{ screenX: number; screenY: number } | null>(null);
@@ -115,47 +148,165 @@ export const PixiGame = (props: {
   const players = [...props.game.world.players.values()];
 
   useEffect(() => {
-    if (!humanPlayerId) {
-      return undefined;
+    function clearHeldStepTimer() {
+      if (heldStepTimerRef.current !== undefined) {
+        window.clearTimeout(heldStepTimerRef.current);
+        heldStepTimerRef.current = undefined;
+      }
     }
+
+    function scheduleHeldStep(delay = 0) {
+      if (heldStepTimerRef.current !== undefined || heldDirectionsRef.current.length === 0) {
+        return;
+      }
+      heldStepTimerRef.current = window.setTimeout(runHeldStep, delay);
+    }
+
+    async function runHeldStep() {
+      heldStepTimerRef.current = undefined;
+      const directions = heldDirectionsRef.current;
+      const direction = directions[directions.length - 1];
+      const playerId = latestHumanPlayerIdRef.current;
+      if (!direction || !playerId || heldErrorSuppressedRef.current) {
+        return;
+      }
+
+      const humanPlayer = latestGameRef.current.world.players.get(playerId);
+      if (!humanPlayer) {
+        return;
+      }
+      if (stepInFlightRef.current) {
+        scheduleHeldStep(HELD_KEY_RETRY_MS);
+        return;
+      }
+
+      const location = latestHumanLocationRef.current;
+      if (humanPlayer.pathfinding) {
+        if (!location) {
+          scheduleHeldStep(HELD_KEY_RETRY_MS);
+          return;
+        }
+        const { destination } = humanPlayer.pathfinding;
+        const remaining = Math.hypot(destination.x - location.x, destination.y - location.y);
+        if (remaining > HELD_STEP_PREFETCH_DISTANCE) {
+          scheduleHeldStep(HELD_KEY_RETRY_MS);
+          return;
+        }
+      }
+
+      if (!humanPlayer.pathfinding && !location) {
+        scheduleHeldStep(HELD_KEY_RETRY_MS);
+        return;
+      }
+
+      stepInFlightRef.current = true;
+      try {
+        await stepPlayerRef.current({ playerId, direction });
+        scheduleHeldStep(HELD_KEY_SUCCESS_DELAY_MS);
+      } catch (error: any) {
+        if (error?.message?.includes('already moving')) {
+          scheduleHeldStep(HELD_KEY_RETRY_MS);
+        } else if (!heldErrorSuppressedRef.current) {
+          heldErrorSuppressedRef.current = true;
+          void toastOnError(Promise.reject(error)).catch(() => null);
+        }
+      } finally {
+        stepInFlightRef.current = false;
+        if (heldDirectionsRef.current.length > 0 && heldStepTimerRef.current === undefined) {
+          scheduleHeldStep(HELD_KEY_RETRY_MS);
+        }
+      }
+    }
+
+    function removeHeldDirection(direction: StepDirection) {
+      heldDirectionsRef.current = heldDirectionsRef.current.filter((d) => d !== direction);
+      heldErrorSuppressedRef.current = false;
+    }
+
     const onKeyDown = (e: KeyboardEvent) => {
       const direction = directionFromKey(e.key);
       if (!direction || e.defaultPrevented || isEditableKeyboardTarget(e.target)) {
         return;
       }
-      const humanPlayer = props.game.world.players.get(humanPlayerId);
-      if (!humanPlayer || humanPlayer.pathfinding) {
+      if (!latestHumanPlayerIdRef.current) {
         return;
       }
       e.preventDefault();
-      void toastOnError(stepPlayer({ playerId: humanPlayerId, direction }));
+      if (!heldDirectionsRef.current.includes(direction)) {
+        removeHeldDirection(direction);
+        heldDirectionsRef.current = [...heldDirectionsRef.current, direction];
+      }
+      scheduleHeldStep();
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [humanPlayerId, props.game.world.players, stepPlayer]);
 
-  // Keep the camera centered on the playable character.
+    const onKeyUp = (e: KeyboardEvent) => {
+      const direction = directionFromKey(e.key);
+      if (!direction) {
+        return;
+      }
+      e.preventDefault();
+      removeHeldDirection(direction);
+      if (heldDirectionsRef.current.length === 0) {
+        clearHeldStepTimer();
+      } else {
+        scheduleHeldStep();
+      }
+    };
+
+    const onBlur = () => {
+      heldDirectionsRef.current = [];
+      heldErrorSuppressedRef.current = false;
+      clearHeldStepTimer();
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      clearHeldStepTimer();
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
   useEffect(() => {
-    if (!viewportRef.current || !humanPlayer || props.width === 0 || props.height === 0) {
+    cameraInitializedRef.current = false;
+  }, [humanPlayerId]);
+
+  // Keep the camera centered on the playable character without changing zoom.
+  useEffect(() => {
+    let frame: number;
+    const followCamera = () => {
+      const viewport = viewportRef.current;
+      const target = cameraTargetRef.current;
+      if (viewport && target && props.width > 0 && props.height > 0) {
+        if (!cameraInitializedRef.current) {
+          viewport.moveCenter(target.x, target.y);
+          cameraInitializedRef.current = true;
+        } else {
+          const center = viewport.center;
+          viewport.moveCenter(
+            center.x + (target.x - center.x) * CAMERA_FOLLOW_LERP,
+            center.y + (target.y - center.y) * CAMERA_FOLLOW_LERP,
+          );
+        }
+      }
+      frame = requestAnimationFrame(followCamera);
+    };
+    frame = requestAnimationFrame(followCamera);
+    return () => cancelAnimationFrame(frame);
+  }, [props.height, props.width]);
+
+  useEffect(() => {
+    if (!humanLocation) {
       return;
     }
-
-    viewportRef.current.animate({
-      position: new PIXI.Point(
-        humanPlayer.position.x * tileDim + tileDim / 2,
-        humanPlayer.position.y * tileDim + tileDim / 2,
-      ),
-      scale: 2,
-      time: 150,
-    });
-  }, [
-    humanPlayer,
-    humanPlayer?.position.x,
-    humanPlayer?.position.y,
-    props.height,
-    props.width,
-    tileDim,
-  ]);
+    cameraTargetRef.current = {
+      x: humanLocation.x * tileDim + tileDim / 2,
+      y: humanLocation.y * tileDim + tileDim / 2,
+    };
+  }, [humanLocation?.x, humanLocation?.y, tileDim]);
 
   return (
     <PixiViewport

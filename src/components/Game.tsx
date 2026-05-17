@@ -10,7 +10,7 @@ import { useWorldHeartbeat } from '../hooks/useWorldHeartbeat.ts';
 import { useHistoricalTime } from '../hooks/useHistoricalTime.ts';
 import { DebugTimeManager } from './DebugTimeManager.tsx';
 import { Minimap } from './Minimap.tsx';
-import RestartButton from './RestartButton.tsx';
+import PauseMenu from './PauseMenu.tsx';
 import { GameId } from '../../convex/aiTown/ids.ts';
 import { useServerGame } from '../hooks/serverGame.ts';
 import { waitForInput } from '../hooks/sendInput.ts';
@@ -101,7 +101,7 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
       </Stage>
       <Minimap game={game} humanPlayerId={humanPlayer?.id} />
       <div className="pointer-events-none absolute bottom-3 left-3 z-10">
-        <RestartButton />
+        <PauseMenu />
       </div>
       {showDetails && (
         <div className="pointer-events-none absolute inset-0 z-10">

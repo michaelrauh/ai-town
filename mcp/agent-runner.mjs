@@ -321,7 +321,7 @@ async function handleGenerateMessage(operation, snapshot) {
     [
       {
         role: 'system',
-        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. No narration, no markdown. Return JSON with a single field "text".`,
+        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Answer direct questions directly and follow the other speaker's topic. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
       },
       {
         role: 'user',

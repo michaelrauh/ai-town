@@ -75,20 +75,45 @@ export const ENGINE_ACTION_DURATION = 30000;
 // Bound the number of pathfinding searches we do per game step.
 export const MAX_PATHFINDS_PER_STEP = 16;
 
-export const DEFAULT_NAME = 'Me';
+export const DEFAULT_NAME = 'Kyle Farmer';
 export const DEFAULT_CHARACTER = 'f5';
-export const DEFAULT_DESCRIPTION = 'Me is the local human player.';
+export const DEFAULT_DESCRIPTION =
+  "Kyle Farmer is a directionless twenty-something from Detroit who has just inherited his late grandfather's farm in Willow Creek. He is the local human player.";
+export const DEFAULT_HOME = 'kyle-cottage';
 
-// One in-game day every 10 real minutes, split into 5 equal blocks of 2 real minutes.
+// One in-game day every 10 real minutes, split into 5 weighted blocks.
+// Evening is short — once the sun starts setting in Willow Creek, it plummets.
 export const GAME_DAY_MS = 10 * 60_000;
 export const SCHEDULE_BLOCKS = ['morning', 'midday', 'afternoon', 'evening', 'night'] as const;
 export type ScheduleBlock = (typeof SCHEDULE_BLOCKS)[number];
 
+export const SCHEDULE_BLOCK_WEIGHTS: Record<ScheduleBlock, number> = {
+  morning: 0.28,
+  midday: 0.28,
+  afternoon: 0.24,
+  evening: 0.08,
+  night: 0.12,
+};
+
 export function gameTimeOfDay(now: number): ScheduleBlock {
-  const fractionOfDay = ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS / GAME_DAY_MS;
-  const idx = Math.min(
-    SCHEDULE_BLOCKS.length - 1,
-    Math.floor(fractionOfDay * SCHEDULE_BLOCKS.length),
-  );
-  return SCHEDULE_BLOCKS[idx];
+  const fractionOfDay = (((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS) / GAME_DAY_MS;
+  let cumulative = 0;
+  for (const block of SCHEDULE_BLOCKS) {
+    cumulative += SCHEDULE_BLOCK_WEIGHTS[block];
+    if (fractionOfDay < cumulative) return block;
+  }
+  return SCHEDULE_BLOCKS[SCHEDULE_BLOCKS.length - 1];
+}
+
+export function scheduleBlockEnd(now: number): number {
+  const dayOffset = ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS;
+  const fractionOfDay = dayOffset / GAME_DAY_MS;
+  let cumulative = 0;
+  for (const block of SCHEDULE_BLOCKS) {
+    cumulative += SCHEDULE_BLOCK_WEIGHTS[block];
+    if (fractionOfDay < cumulative) {
+      return now + (cumulative * GAME_DAY_MS - dayOffset);
+    }
+  }
+  return now + (GAME_DAY_MS - dayOffset);
 }

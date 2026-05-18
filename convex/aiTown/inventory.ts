@@ -3,7 +3,7 @@ import { point } from '../util/types';
 import { groundItemId, playerId } from './ids';
 
 export const INVENTORY_SLOT_COUNT = 3;
-export const STARTING_COINS = 20;
+export const STARTING_COINS = 200;
 export const GROUND_ITEM_PICKUP_RADIUS = 1.5;
 
 export const inventoryItem = v.object({
@@ -56,3 +56,30 @@ export function normalizeItem(item: InventoryItem): InventoryItem {
     sourceObjectRef: item.sourceObjectRef,
   };
 }
+
+export const KYLE_STARTING_INVENTORY: InventoryItem[] = [
+  {
+    itemId: 'hoe',
+    name: 'Hoe',
+    description: "Grandfather's old hoe.",
+    emoji: '🪓',
+    tags: ['tool', 'farm'],
+    sellPrice: 6,
+  },
+  {
+    itemId: 'taskbook',
+    name: 'Taskbook',
+    description: 'Where formal Tasks are recorded.',
+    emoji: '📒',
+    tags: ['paper', 'curio'],
+    sellPrice: 0,
+  },
+  {
+    itemId: 'journal',
+    name: 'Journal',
+    description: "Kyle's personal journal.",
+    emoji: '📓',
+    tags: ['paper', 'curio'],
+    sellPrice: 4,
+  },
+];

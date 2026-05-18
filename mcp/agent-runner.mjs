@@ -19,6 +19,14 @@ const CONVEX_CALL_TIMEOUT_MS = Number(process.env.MCP_CONVEX_TIMEOUT_MS ?? 30_00
 const OPERATION_TIMEOUT_MS = Number(process.env.MCP_OPERATION_TIMEOUT_MS ?? 90_000);
 const GAME_DAY_MS = 10 * 60_000;
 const SCHEDULE_BLOCKS = ['morning', 'midday', 'afternoon', 'evening', 'night'];
+// Must match convex/constants.ts SCHEDULE_BLOCK_WEIGHTS.
+const SCHEDULE_BLOCK_WEIGHTS = {
+  morning: 0.28,
+  midday: 0.28,
+  afternoon: 0.24,
+  evening: 0.08,
+  night: 0.12,
+};
 const NEARBY_PLAYER_DISTANCE_TILES = 6;
 const MEMORY_SEARCH_LIMIT = 3;
 const MAX_CONTEXT_MEMORIES = 8;
@@ -168,17 +176,25 @@ function buildSelfFacts(snapshot, playerId, agentId) {
 
 function gameTimeOfDay(now) {
   const fractionOfDay = (((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS) / GAME_DAY_MS;
-  const idx = Math.min(
-    SCHEDULE_BLOCKS.length - 1,
-    Math.floor(fractionOfDay * SCHEDULE_BLOCKS.length),
-  );
-  return SCHEDULE_BLOCKS[idx];
+  let cumulative = 0;
+  for (const block of SCHEDULE_BLOCKS) {
+    cumulative += SCHEDULE_BLOCK_WEIGHTS[block];
+    if (fractionOfDay < cumulative) return block;
+  }
+  return SCHEDULE_BLOCKS[SCHEDULE_BLOCKS.length - 1];
 }
 
 function scheduleBlockEnd(now) {
-  const blockDuration = GAME_DAY_MS / SCHEDULE_BLOCKS.length;
   const dayOffset = ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS;
-  return now + (blockDuration - (dayOffset % blockDuration));
+  const fractionOfDay = dayOffset / GAME_DAY_MS;
+  let cumulative = 0;
+  for (const block of SCHEDULE_BLOCKS) {
+    cumulative += SCHEDULE_BLOCK_WEIGHTS[block];
+    if (fractionOfDay < cumulative) {
+      return now + (cumulative * GAME_DAY_MS - dayOffset);
+    }
+  }
+  return now + (GAME_DAY_MS - dayOffset);
 }
 
 function activeExplicitIntent(intent, now) {
@@ -766,7 +782,7 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, useObject, pickUpItem, putDownItem, buyItem, or sellItem. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. Prioritize currentContext.currentGoal, especially explicit reflection or conversation goals, unless the available actions cannot satisfy it yet. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. For pickUpItem, buyItem, sellItem, and putDownItem, choose only an id or slot listed in the schema and currentContext; do not invent items, money, shop stock, or inventory slots. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, inventory, coins, memories, goals, and current state to make a choice in character.',
+          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, useObject, pickUpItem, putDownItem, buyItem, or sellItem. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. Prioritize currentContext.currentGoal, especially explicit reflection or conversation goals, unless the available actions cannot satisfy it yet. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, choose a description and emoji — the activity automatically runs until the end of the current schedule block, do not pick a duration. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs (5000-600000). For pickUpItem, buyItem, sellItem, and putDownItem, choose only an id or slot listed in the schema and currentContext; do not invent items, money, shop stock, or inventory slots. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, inventory, coins, memories, goals, and current state to make a choice in character.',
       },
       {
         role: 'user',
@@ -808,8 +824,8 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
       y,
     });
   } else if (action === 'activity') {
-    if (!description || durationMs == null) {
-      throw new Error('activity action missing description or durationMs');
+    if (!description) {
+      throw new Error('activity action missing description');
     }
     await deps.callTool('aitown.do_activity', {
       worldId: operation.worldId,
@@ -817,7 +833,6 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
       operationId: operation.operationId,
       description,
       emoji: emoji ?? undefined,
-      durationMs,
     });
   } else if (action === 'invite') {
     if (!invitee) {

@@ -2,7 +2,7 @@ import { v } from 'convex/values';
 import { agentId, conversationId, parseGameId } from './ids';
 import {
   Player,
-  activity,
+  activityRequest,
   buyItem,
   buyItemRequest,
   pickUpItem,
@@ -22,6 +22,7 @@ import { Descriptions } from '../../data/characters';
 import { AgentDescription } from './agentDescription';
 import { Agent } from './agent';
 import { agentIntent } from './agentIntent';
+import { scheduleBlockEnd } from '../constants';
 
 export const agentInputs = {
   finishAgentOperation: inputHandler({
@@ -101,7 +102,7 @@ export const agentInputs = {
       agentId,
       destination: v.optional(point),
       invitee: v.optional(v.id('players')),
-      activity: v.optional(activity),
+      activity: v.optional(activityRequest),
       useObject: v.optional(useObjectRequest),
       pickUpItem: v.optional(pickUpItemRequest),
       putDownItem: v.optional(putDownItemRequest),
@@ -137,7 +138,11 @@ export const agentInputs = {
       }
       if (args.activity) {
         delete player.objectUse;
-        player.activity = args.activity;
+        player.activity = {
+          description: args.activity.description,
+          emoji: args.activity.emoji,
+          until: scheduleBlockEnd(now),
+        };
       }
       if (args.useObject) {
         startObjectUse(game, now, player, args.useObject);

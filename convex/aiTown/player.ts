@@ -67,6 +67,13 @@ export const activity = v.object({
 });
 export type Activity = Infer<typeof activity>;
 
+// Input shape from agent operations — `until` is computed server-side from the schedule block.
+export const activityRequest = v.object({
+  description: v.string(),
+  emoji: v.optional(v.string()),
+});
+export type ActivityRequest = Infer<typeof activityRequest>;
+
 export const objectUse = v.object({
   objectRef: v.string(),
   objectName: v.string(),
@@ -268,6 +275,7 @@ export class Player {
     description: string,
     tokenIdentifier?: string,
     homeName?: string,
+    startingInventory?: InventorySlot[],
   ) {
     if (tokenIdentifier) {
       let numHumans = 0;
@@ -318,17 +326,18 @@ export class Player {
       throw new Error(`Invalid character: ${character}`);
     }
     const playerId = game.allocId('players');
-    game.world.players.set(
-      playerId,
-      new Player({
-        id: playerId,
-        human: tokenIdentifier,
-        lastInput: now,
-        position,
-        facing,
-        speed: 0,
-      }),
-    );
+    const newPlayer = new Player({
+      id: playerId,
+      human: tokenIdentifier,
+      lastInput: now,
+      position,
+      facing,
+      speed: 0,
+    });
+    if (startingInventory) {
+      newPlayer.inventory = normalizeInventory(startingInventory);
+    }
+    game.world.players.set(playerId, newPlayer);
     game.playerDescriptions.set(
       playerId,
       new PlayerDescription({
@@ -617,9 +626,20 @@ export const playerInputs = {
       character: v.string(),
       description: v.string(),
       tokenIdentifier: v.optional(v.string()),
+      homeName: v.optional(v.string()),
+      startingInventory: v.optional(v.array(inventorySlot)),
     },
     handler: (game, now, args) => {
-      Player.join(game, now, args.name, args.character, args.description, args.tokenIdentifier);
+      Player.join(
+        game,
+        now,
+        args.name,
+        args.character,
+        args.description,
+        args.tokenIdentifier,
+        args.homeName,
+        args.startingInventory,
+      );
       return null;
     },
   }),

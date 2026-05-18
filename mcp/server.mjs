@@ -164,7 +164,7 @@ export function tools() {
     {
       name: 'aitown.do_activity',
       description:
-        'Decide the NPC will be busy with a personal activity for a duration. Use when the character should occupy themselves alone. Atomically commits the agentDoSomething operation.',
+        'Decide the NPC will be busy with a personal activity. The activity runs until the end of the current schedule block — choose what to do, not how long. Atomically commits the agentDoSomething operation.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -173,9 +173,8 @@ export function tools() {
           operationId: { type: 'string' },
           description: { type: 'string', minLength: 1, maxLength: 120 },
           emoji: { type: 'string', maxLength: 8 },
-          durationMs: { type: 'integer', minimum: 5000, maximum: 600000 },
         },
-        required: ['agentId', 'operationId', 'description', 'durationMs'],
+        required: ['agentId', 'operationId', 'description'],
         additionalProperties: false,
       },
     },
@@ -467,7 +466,6 @@ export async function callTool(name, args) {
           activity: {
             description: args.description,
             emoji: args.emoji,
-            until: Date.now() + args.durationMs,
           },
         }),
       );

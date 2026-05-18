@@ -17,15 +17,13 @@ export async function startConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, agent, otherAgent, lastConversation } = await ctx.runQuery(
-    selfInternal.queryPromptData,
-    {
+  const { player, otherPlayer, agent, otherAgent, lastConversation, townCurse } =
+    await ctx.runQuery(selfInternal.queryPromptData, {
       worldId,
       playerId,
       otherPlayerId,
       conversationId,
-    },
-  );
+    });
   const embedding = await embeddingsCache.fetch(
     ctx,
     `${player.name} is talking to ${otherPlayer.name}`,
@@ -45,6 +43,7 @@ export async function startConversationMessage(
     `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,
   ];
   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+  prompt.push(...townCursePrompt(townCurse));
   prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
   prompt.push(...relatedMemoriesPrompt(memories));
   if (memoryWithOtherPlayer) {
@@ -82,7 +81,7 @@ export async function continueConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
+  const { player, otherPlayer, conversation, agent, otherAgent, townCurse } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
       worldId,
@@ -103,6 +102,7 @@ export async function continueConversationMessage(
     `The conversation started at ${started.toLocaleString()}. It's now ${now.toLocaleString()}.`,
   ];
   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+  prompt.push(...townCursePrompt(townCurse));
   prompt.push(...relatedMemoriesPrompt(memories));
   prompt.push(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
@@ -140,7 +140,7 @@ export async function leaveConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
+  const { player, otherPlayer, conversation, agent, otherAgent, townCurse } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
       worldId,
@@ -154,6 +154,7 @@ export async function leaveConversationMessage(
     `You've decided to leave the question and would like to politely tell them you're leaving the conversation.`,
   ];
   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+  prompt.push(...townCursePrompt(townCurse));
   prompt.push(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
     `How would you like to tell them that you're leaving? Your response should be brief and within 200 characters.`,
@@ -222,6 +223,13 @@ function agentPrompts(
     prompt.push(`About ${otherPlayer.name}: ${otherAgent.identity}`);
   }
   return prompt;
+}
+
+function townCursePrompt(townCurse: { active?: boolean; intensity?: number } | null): string[] {
+  if (!townCurse?.active) return [];
+  return [
+    "The town of Willow Creek is currently under the Harvest Queen's curse, lingering since lightning shattered her statue in the town square a year ago. You feel its weight on the harvest, the willow tree, and the townsfolk. You may mention it when it is relevant to the conversation.",
+  ];
 }
 
 function previousConversationPrompt(
@@ -356,7 +364,13 @@ export const queryPromptData = internalQuery({
         throw new Error(`Conversation ${lastTogether.conversationId} not found`);
       }
     }
+    const curseFlag = await ctx.db
+      .query('worldFlags')
+      .withIndex('worldId_name', (q) => q.eq('worldId', args.worldId).eq('name', 'townCurse'))
+      .first();
+    const townCurse = curseFlag?.value as { active?: boolean; intensity?: number } | undefined;
     return {
+      townCurse: townCurse ?? null,
       player: { name: playerDescription.name, ...player },
       otherPlayer: { name: otherPlayerDescription.name, ...otherPlayer },
       conversation,

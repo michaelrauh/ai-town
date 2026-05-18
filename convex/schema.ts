@@ -31,6 +31,12 @@ export default defineSchema({
     savedAt: v.number(),
   }).index('slot', ['slot']),
 
+  worldFlags: defineTable({
+    worldId: v.id('worlds'),
+    name: v.string(),
+    value: v.any(),
+  }).index('worldId_name', ['worldId', 'name']),
+
   ...agentTables,
   ...aiTownTables,
   ...engineTables,

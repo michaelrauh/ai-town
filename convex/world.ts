@@ -4,11 +4,13 @@ import { insertInput } from './aiTown/insertInput';
 import {
   DEFAULT_CHARACTER,
   DEFAULT_DESCRIPTION,
+  DEFAULT_HOME,
   DEFAULT_NAME,
   ENGINE_ACTION_DURATION,
   IDLE_WORLD_TIMEOUT,
   WORLD_HEARTBEAT_INTERVAL,
 } from './constants';
+import { KYLE_STARTING_INVENTORY } from './aiTown/inventory';
 import { playerId } from './aiTown/ids';
 import { kickEngine, startEngine, stopEngine } from './aiTown/main';
 import { engineInsertInput } from './engine/abstractGame';
@@ -136,6 +138,8 @@ export const joinWorld = mutation({
       description: DEFAULT_DESCRIPTION,
       // description: `${identity.givenName} is a human player`,
       tokenIdentifier: DEFAULT_NAME,
+      homeName: DEFAULT_HOME,
+      startingInventory: KYLE_STARTING_INVENTORY,
     });
   },
 });
@@ -201,6 +205,18 @@ export const worldState = query({
       throw new Error(`Invalid engine ID: ${worldStatus.engineId}`);
     }
     return { world, engine };
+  },
+});
+
+export const townCurse = query({
+  args: { worldId: v.id('worlds') },
+  handler: async (ctx, args) => {
+    const flag = await ctx.db
+      .query('worldFlags')
+      .withIndex('worldId_name', (q) => q.eq('worldId', args.worldId).eq('name', 'townCurse'))
+      .first();
+    const value = flag?.value as { active?: boolean; intensity?: number } | undefined;
+    return value ?? null;
   },
 });
 

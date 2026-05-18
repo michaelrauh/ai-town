@@ -1,6 +1,7 @@
 import {
   GAME_DAY_MS,
   SCHEDULE_BLOCKS,
+  SCHEDULE_BLOCK_WEIGHTS,
   gameTimeOfDay,
   type ScheduleBlock,
 } from '../../convex/constants';
@@ -35,17 +36,22 @@ const lighting: Record<ScheduleBlock, DayLighting> = {
   night: { color: 0x071533, alpha: 0.46 },
 };
 
-export const DAY_SLICES: DaySlice[] = SCHEDULE_BLOCKS.map((block, index) => {
-  const sliceMs = GAME_DAY_MS / SCHEDULE_BLOCKS.length;
-  return {
-    id: block,
-    label: labels[block],
-    index,
-    startMs: index * sliceMs,
-    endMs: (index + 1) * sliceMs,
-    lighting: lighting[block],
-  };
-});
+export const DAY_SLICES: DaySlice[] = (() => {
+  let cursor = 0;
+  return SCHEDULE_BLOCKS.map((block, index) => {
+    const sliceMs = GAME_DAY_MS * SCHEDULE_BLOCK_WEIGHTS[block];
+    const slice: DaySlice = {
+      id: block,
+      label: labels[block],
+      index,
+      startMs: cursor,
+      endMs: cursor + sliceMs,
+      lighting: lighting[block],
+    };
+    cursor += sliceMs;
+    return slice;
+  });
+})();
 
 export function dayOffset(now: number) {
   return ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS;
@@ -68,4 +74,21 @@ export function currentSliceProgress(now: number) {
 
 export function lightingForTime(now: number): DayLighting {
   return currentDaySlice(now).lighting;
+}
+
+const CURSE_TINT_COLOR = 0x6f8a5a;
+const CURSE_TINT_BOOST = 0.18;
+
+export function applyCurseTint(
+  lighting: DayLighting,
+  curse: { active?: boolean; intensity?: number } | null | undefined,
+): DayLighting {
+  if (!curse?.active) return lighting;
+  const intensity = Math.max(0, Math.min(1, curse.intensity ?? 0.5));
+  const baseAlpha = lighting.alpha;
+  const blendedColor = lighting.alpha < 0.05 ? CURSE_TINT_COLOR : lighting.color;
+  return {
+    color: blendedColor,
+    alpha: Math.min(0.7, baseAlpha + CURSE_TINT_BOOST * intensity),
+  };
 }

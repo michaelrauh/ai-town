@@ -85,6 +85,11 @@ async function getOrCreateDefaultWorld(ctx: MutationCtx) {
     animatedSprites: map.animatedsprites,
     pois,
   });
+  await ctx.db.insert('worldFlags', {
+    worldId,
+    name: 'townCurse',
+    value: { active: true, intensity: 0.5 },
+  });
   await ctx.scheduler.runAfter(0, internal.aiTown.main.runStep, {
     worldId,
     generationNumber: engine.generationNumber,

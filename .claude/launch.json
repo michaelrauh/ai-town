@@ -2,10 +2,11 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "vite-docker",
-      "runtimeExecutable": "tail",
-      "runtimeArgs": ["-f", "/dev/null"],
-      "port": 5173
+      "name": "vite",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:frontend"],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }

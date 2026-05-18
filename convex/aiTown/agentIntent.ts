@@ -1,6 +1,8 @@
 import { ObjectType, v } from 'convex/values';
-import { GAME_DAY_MS, SCHEDULE_BLOCKS } from '../constants';
+import { scheduleBlockEnd } from '../constants';
 import { playerId } from './ids';
+
+export { scheduleBlockEnd };
 
 export const AGENT_INTENT_KINDS = [
   'followSchedule',
@@ -78,12 +80,6 @@ export type AgentGoalStatus = {
 
 export function activeExplicitIntent(intent: AgentIntent | undefined, now: number) {
   return intent && intent.expiresAt > now ? intent : null;
-}
-
-export function scheduleBlockEnd(now: number) {
-  const blockDuration = GAME_DAY_MS / SCHEDULE_BLOCKS.length;
-  const dayOffset = ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS;
-  return now + (blockDuration - (dayOffset % blockDuration));
 }
 
 export function makeFollowScheduleIntent({

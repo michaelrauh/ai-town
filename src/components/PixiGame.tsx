@@ -19,7 +19,7 @@ import { ServerGame } from '../hooks/serverGame.ts';
 import type { StepDirection } from '../../convex/aiTown/player.ts';
 import { locationFields, playerLocation, type Location } from '../../convex/aiTown/location.ts';
 import { useHistoricalValue } from '../hooks/useHistoricalValue.ts';
-import { lightingForTime } from '../lib/dayCycle.ts';
+import { applyCurseTint, lightingForTime } from '../lib/dayCycle.ts';
 import { PixiLightingOverlay } from './PixiLightingOverlay.tsx';
 
 function isEditableKeyboardTarget(target: EventTarget | null) {
@@ -163,7 +163,8 @@ export const PixiGame = (props: {
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
   const currentTime = props.historicalTime ?? Date.now();
-  const lighting = lightingForTime(currentTime);
+  const townCurseValue = useQuery(api.world.townCurse, { worldId: props.worldId }) ?? null;
+  const lighting = applyCurseTint(lightingForTime(currentTime), townCurseValue);
 
   useEffect(() => {
     function clearHeldStepTimer() {

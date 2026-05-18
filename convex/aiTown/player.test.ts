@@ -3,6 +3,7 @@ import { queryPath } from '../util/types';
 import { Game } from './game';
 import { findRoute, movementSpeedForPlayer } from './movement';
 import { Player, playerInputs } from './player';
+import { STARTING_COINS } from './inventory';
 import type { Poi } from './worldMap';
 
 function openLayer(width: number, height: number) {
@@ -247,10 +248,10 @@ describe('player inventory and commerce', () => {
     const game = makeGame();
     const player = game.world.players.get('p:1' as any)!;
 
-    expect(player.coins).toBe(20);
+    expect(player.coins).toBe(STARTING_COINS);
     expect(player.inventory).toEqual([null, null, null]);
     expect(player.serialize()).toMatchObject({
-      coins: 20,
+      coins: STARTING_COINS,
       inventory: [null, null, null],
     });
   });

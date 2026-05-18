@@ -3,9 +3,11 @@ import { Player, SelectElement } from './Player.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
 import { PixiPois } from './PixiPois.tsx';
+import { PixiGroundItems } from './PixiGroundItems.tsx';
 import PixiViewport from './PixiViewport.tsx';
 import { Viewport } from 'pixi-viewport';
 import { Id } from '../../convex/_generated/dataModel';
+import { GameId } from '../../convex/aiTown/ids.ts';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api.js';
 import { useSendInput } from '../hooks/sendInput.ts';
@@ -80,6 +82,7 @@ export const PixiGame = (props: {
 
   const moveTo = useSendInput(props.engineId, 'moveTo');
   const stepPlayer = useSendInput(props.engineId, 'stepPlayer');
+  const pickUpItem = useSendInput(props.engineId, 'pickUpItem');
   const latestGameRef = useRef(props.game);
   const latestHumanPlayerIdRef = useRef(humanPlayerId);
   const latestHumanLocationRef = useRef(humanLocation);
@@ -145,6 +148,17 @@ export const PixiGame = (props: {
     };
     console.log(`Moving to ${JSON.stringify(roundedTiles)}`);
     await toastOnError(moveTo({ playerId: humanPlayerId, destination: roundedTiles }));
+  };
+  const onPickUpGroundItem = async (groundItemId: GameId<'groundItems'>) => {
+    if (!humanPlayerId) {
+      return;
+    }
+    await toastOnError(
+      pickUpItem({
+        playerId: humanPlayerId,
+        source: { kind: 'groundItem', groundItemId },
+      }),
+    );
   };
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
@@ -327,6 +341,11 @@ export const PixiGame = (props: {
         onpointerdown={onMapPointerDown}
       />
       <PixiPois game={props.game} currentTime={currentTime} />
+      <PixiGroundItems
+        game={props.game}
+        humanPlayerId={humanPlayerId}
+        onPickUp={onPickUpGroundItem}
+      />
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.

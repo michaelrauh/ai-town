@@ -13,6 +13,10 @@ function testPoi(): Poi {
         id: 'counter',
         name: 'Counter',
         affordances: [{ id: 'order', name: 'Order coffee' }],
+        commerce: {
+          buy: [{ itemId: 'coffee-cup', name: 'Coffee cup', tags: ['drink'], price: 4 }],
+          sellTags: ['food'],
+        },
         subObjects: [
           {
             id: 'espresso-machine',
@@ -25,6 +29,12 @@ function testPoi(): Poi {
         id: 'bookshelf',
         name: 'Bookshelf',
         affordances: [{ id: 'read', name: 'Read' }],
+        portable: {
+          itemId: 'small-book',
+          name: 'Small book',
+          tags: ['book'],
+          sellPrice: 2,
+        },
       },
     ],
   };
@@ -45,6 +55,10 @@ describe('poi object layout', () => {
       depth: 1,
       affordances: [{ id: 'steam-milk', name: 'Steam milk' }],
     });
+    expect(objects[0].commerce).toMatchObject({
+      buy: [{ itemId: 'coffee-cup', name: 'Coffee cup', tags: ['drink'], price: 4 }],
+    });
+    expect(objects[2].portable).toMatchObject({ itemId: 'small-book', name: 'Small book' });
   });
 
   test('keeps positions inside the POI bbox', () => {

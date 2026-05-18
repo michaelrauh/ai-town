@@ -18,6 +18,10 @@ function makeGame({
   pathfinding = undefined,
   participating = false,
   pois = [],
+  playerExtra = {},
+  npcExtra = {},
+  groundItems = [],
+  takenPoiItemRefs = [],
 }: {
   playerPosition?: { x: number; y: number };
   npcPosition?: { x: number; y: number };
@@ -27,6 +31,10 @@ function makeGame({
   pathfinding?: any;
   participating?: boolean;
   pois?: Poi[];
+  playerExtra?: Record<string, unknown>;
+  npcExtra?: Record<string, unknown>;
+  groundItems?: any[];
+  takenPoiItemRefs?: string[];
 } = {}) {
   const layer = openLayer(width, height);
   for (const tile of blockedTiles) {
@@ -41,6 +49,7 @@ function makeGame({
       position: playerPosition,
       facing: { dx: 0, dy: 1 },
       speed: 0,
+      ...playerExtra,
     },
     {
       id: 'p:2',
@@ -48,6 +57,7 @@ function makeGame({
       position: npcPosition,
       facing: { dx: -1, dy: 0 },
       speed: 0,
+      ...npcExtra,
     },
   ];
   const conversations = participating
@@ -79,6 +89,8 @@ function makeGame({
         players,
         conversations,
         agents: [],
+        groundItems,
+        takenPoiItemRefs,
       },
       playerDescriptions: [
         { playerId: 'p:1', name: 'Me', character: 'f5', description: 'Local player' },
@@ -99,6 +111,64 @@ function makeGame({
       },
     },
   );
+}
+
+function testItem(itemId: string, name = itemId) {
+  return {
+    itemId,
+    name,
+    tags: ['food'],
+    sellPrice: 2,
+  };
+}
+
+function portableShopPoi(): Poi {
+  return {
+    id: 'coffee-shop',
+    name: 'Coffee Shop',
+    kind: 'shop',
+    bbox: { x: 2, y: 2, w: 5, h: 5 },
+    description: 'A coffee shop.',
+    subObjects: [
+      {
+        id: 'counter',
+        name: 'Counter',
+        affordances: [{ id: 'order', name: 'Order coffee' }],
+        commerce: {
+          buy: [
+            {
+              itemId: 'coffee-cup',
+              name: 'Coffee cup',
+              tags: ['food', 'drink'],
+              price: 4,
+              sellPrice: 1,
+            },
+          ],
+          sellTags: ['food', 'drink'],
+        },
+        subObjects: [
+          {
+            id: 'pastry-case',
+            name: 'Pastry case',
+            affordances: [],
+            subObjects: [
+              {
+                id: 'cookie',
+                name: 'Cookie',
+                affordances: [],
+                portable: {
+                  itemId: 'cookie',
+                  name: 'Cookie',
+                  tags: ['food'],
+                  sellPrice: 2,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
 }
 
 describe('Player.join home spawn', () => {
@@ -169,6 +239,185 @@ describe('Player.join home spawn', () => {
     } finally {
       Math.random = originalRandom;
     }
+  });
+});
+
+describe('player inventory and commerce', () => {
+  test('normalizes legacy players to coins and three empty slots', () => {
+    const game = makeGame();
+    const player = game.world.players.get('p:1' as any)!;
+
+    expect(player.coins).toBe(20);
+    expect(player.inventory).toEqual([null, null, null]);
+    expect(player.serialize()).toMatchObject({
+      coins: 20,
+      inventory: [null, null, null],
+    });
+  });
+
+  test('picks up a tagged POI object and marks it taken', () => {
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [portableShopPoi()],
+    });
+
+    const result = playerInputs.pickUpItem.handler(game, 100, {
+      playerId: 'p:1',
+      source: { kind: 'poiObject', objectRef: 'coffee-shop/counter/pastry-case/cookie' },
+    });
+
+    expect(result.slotIndex).toBe(0);
+    expect(game.world.players.get('p:1' as any)?.inventory[0]).toMatchObject({
+      itemId: 'cookie',
+      name: 'Cookie',
+      tags: ['food'],
+      sellPrice: 2,
+      sourceObjectRef: 'coffee-shop/counter/pastry-case/cookie',
+    });
+    expect(game.world.takenPoiItemRefs.has('coffee-shop/counter/pastry-case/cookie')).toBe(true);
+  });
+
+  test('rejects untagged, taken, out-of-POI, and full-inventory pickups', () => {
+    const fullInventory = [testItem('a'), testItem('b'), testItem('c')];
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [portableShopPoi()],
+      playerExtra: { inventory: fullInventory },
+      takenPoiItemRefs: ['coffee-shop/counter/pastry-case/cookie'],
+    });
+
+    expect(() =>
+      playerInputs.pickUpItem.handler(game, 100, {
+        playerId: 'p:1',
+        source: { kind: 'poiObject', objectRef: 'coffee-shop/counter' },
+      }),
+    ).toThrowError('coffee-shop/counter is not a portable object');
+    expect(() =>
+      playerInputs.pickUpItem.handler(game, 100, {
+        playerId: 'p:1',
+        source: { kind: 'poiObject', objectRef: 'coffee-shop/counter/pastry-case/cookie' },
+      }),
+    ).toThrowError('has already been picked up');
+
+    game.world.takenPoiItemRefs.clear();
+    expect(() =>
+      playerInputs.pickUpItem.handler(game, 100, {
+        playerId: 'p:1',
+        source: { kind: 'poiObject', objectRef: 'coffee-shop/counter/pastry-case/cookie' },
+      }),
+    ).toThrowError('Inventory is full');
+
+    const outside = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 0, y: 0 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [portableShopPoi()],
+    });
+    expect(() =>
+      playerInputs.pickUpItem.handler(outside, 100, {
+        playerId: 'p:1',
+        source: { kind: 'poiObject', objectRef: 'coffee-shop/counter/pastry-case/cookie' },
+      }),
+    ).toThrowError('Player p:1 is not near Coffee Shop');
+  });
+
+  test('drops an inventory item and lets another character pick it up', () => {
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 3, y: 4 },
+      playerExtra: { inventory: [testItem('cookie', 'Cookie'), null, null] },
+    });
+
+    const dropped = playerInputs.putDownItem.handler(game, 100, {
+      playerId: 'p:1',
+      slotIndex: 0,
+    });
+
+    expect(dropped).toMatchObject({
+      id: 'g:10',
+      position: { x: 3, y: 3 },
+      item: { itemId: 'cookie', name: 'Cookie' },
+    });
+    expect(game.world.players.get('p:1' as any)?.inventory[0]).toBeNull();
+
+    playerInputs.pickUpItem.handler(game, 200, {
+      playerId: 'p:2',
+      source: { kind: 'groundItem', groundItemId: dropped.id },
+    });
+
+    expect(game.world.groundItems.size).toBe(0);
+    expect(game.world.players.get('p:2' as any)?.inventory[0]).toMatchObject({
+      itemId: 'cookie',
+      name: 'Cookie',
+    });
+  });
+
+  test('buys only at shop-counter commerce with coins and open slots', () => {
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [portableShopPoi()],
+      playerExtra: { coins: 5 },
+    });
+
+    const result = playerInputs.buyItem.handler(game, 100, {
+      playerId: 'p:1',
+      objectRef: 'coffee-shop/counter',
+      itemId: 'coffee-cup',
+    });
+
+    expect(result.coins).toBe(1);
+    expect(game.world.players.get('p:1' as any)?.inventory[0]).toMatchObject({
+      itemId: 'coffee-cup',
+      name: 'Coffee cup',
+    });
+
+    const broke = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [portableShopPoi()],
+      playerExtra: { coins: 3 },
+    });
+    expect(() =>
+      playerInputs.buyItem.handler(broke, 100, {
+        playerId: 'p:1',
+        objectRef: 'coffee-shop/counter',
+        itemId: 'coffee-cup',
+      }),
+    ).toThrowError('Not enough coins');
+  });
+
+  test('sells accepted tagged items and credits sell price', () => {
+    const game = makeGame({
+      width: 8,
+      height: 8,
+      playerPosition: { x: 3, y: 3 },
+      npcPosition: { x: 7, y: 7 },
+      pois: [portableShopPoi()],
+      playerExtra: { coins: 1, inventory: [testItem('cookie', 'Cookie'), null, null] },
+    });
+
+    const result = playerInputs.sellItem.handler(game, 100, {
+      playerId: 'p:1',
+      objectRef: 'coffee-shop/counter',
+      slotIndex: 0,
+    });
+
+    expect(result.coins).toBe(3);
+    expect(game.world.players.get('p:1' as any)?.inventory[0]).toBeNull();
   });
 });
 

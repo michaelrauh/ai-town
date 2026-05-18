@@ -18,6 +18,8 @@ function makeServerGame({
   conversations = [],
   agents = [{ id: 'a:1', playerId: 'p:1' }],
   pois = [cafePoi()],
+  groundItems = [],
+  takenPoiItemRefs = [],
 }: {
   width?: number;
   height?: number;
@@ -25,6 +27,8 @@ function makeServerGame({
   conversations?: any[];
   agents?: any[];
   pois?: Poi[];
+  groundItems?: any[];
+  takenPoiItemRefs?: string[];
 } = {}) {
   const game = new Game(
     {
@@ -48,6 +52,8 @@ function makeServerGame({
               ],
         conversations,
         agents,
+        groundItems,
+        takenPoiItemRefs,
       },
       playerDescriptions: [
         { playerId: 'p:1', name: 'Lucky', character: 'f1', description: 'Curious NPC' },
@@ -130,6 +136,36 @@ function cafePoi(): Poi {
         id: 'bookshelf',
         name: 'Bookshelf',
         affordances: [{ id: 'read', name: 'Read' }],
+        subObjects: [
+          {
+            id: 'field-notes',
+            name: 'Field notes',
+            affordances: [],
+            portable: {
+              itemId: 'field-notes',
+              name: 'Field notes',
+              tags: ['book', 'curio'],
+              sellPrice: 5,
+            },
+          },
+        ],
+      },
+      {
+        id: 'counter',
+        name: 'Counter',
+        affordances: [],
+        commerce: {
+          buy: [
+            {
+              itemId: 'coffee-cup',
+              name: 'Coffee cup',
+              tags: ['food', 'drink'],
+              price: 4,
+              sellPrice: 1,
+            },
+          ],
+          sellTags: ['food', 'drink', 'book', 'curio'],
+        },
       },
     ],
   };
@@ -182,6 +218,49 @@ describe('inspector context helpers', () => {
     const context = buildInspectorContext(game, 'p:1' as any, 0);
 
     expect(context?.surroundings.nearbyPlayers.map((p) => p.name)).toEqual(['Alice']);
+  });
+
+  test('includes inventory, nearby items, and commerce state', () => {
+    const game = makeServerGame({
+      players: [
+        player('p:1', { x: 1, y: 1 }, {
+          coins: 12,
+          inventory: [{ itemId: 'old-map', name: 'Old map', tags: ['curio'], sellPrice: 3 }],
+        }),
+      ],
+      groundItems: [
+        {
+          id: 'g:1',
+          item: { itemId: 'loose-cookie', name: 'Loose cookie', tags: ['food'], sellPrice: 2 },
+          position: { x: 1, y: 2 },
+          droppedAt: 100,
+        },
+      ],
+    });
+
+    const context = buildInspectorContext(game, 'p:1' as any, 1000);
+
+    expect(context?.coins).toBe(12);
+    expect(context?.inventory[0]).toMatchObject({ itemId: 'old-map' });
+    expect(context?.surroundings.portableObjects).toEqual([
+      expect.objectContaining({
+        objectRef: 'cafe/bookshelf/field-notes',
+        item: expect.objectContaining({ name: 'Field notes' }),
+      }),
+    ]);
+    expect(context?.surroundings.nearbyGroundItems).toEqual([
+      expect.objectContaining({
+        id: 'g:1',
+        item: expect.objectContaining({ name: 'Loose cookie' }),
+      }),
+    ]);
+    expect(context?.surroundings.commerceOptions).toEqual([
+      expect.objectContaining({
+        objectRef: 'cafe/counter',
+        buy: [expect.objectContaining({ itemId: 'coffee-cup' })],
+        sellTags: expect.arrayContaining(['curio']),
+      }),
+    ]);
   });
 
   test('includes active object users in the same POI', () => {

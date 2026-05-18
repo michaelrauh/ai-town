@@ -271,6 +271,13 @@ function CharactersTab({ context }: { context: InspectorContext }) {
       </Section>
 
       <Section title="State">
+        <Field label="Coins" value={context.coins} />
+        <LongText
+          label="Inventory"
+          value={context.inventory
+            .map((item, index) => `${index + 1}: ${item ? item.name : 'Empty'}`)
+            .join('\n')}
+        />
         <Field label="Activity" value={context.state.activity?.description ?? null} />
         <Field label="Object use" value={context.state.objectUse?.description ?? null} />
         <Field label="Pathfinding" value={pathfindingLabel(context.state.pathfinding)} />
@@ -343,6 +350,75 @@ function PerceptionTab({
                   {user.objectName} until {timeLabel(user.until)}
                 </div>
                 <div className="mt-1 text-sm leading-snug text-brown-100">{user.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Nearby Items">
+        {context.surroundings.portableObjects.length === 0 &&
+        context.surroundings.nearbyGroundItems.length === 0 ? (
+          <EmptyState>No nearby portable or ground items.</EmptyState>
+        ) : (
+          <div className="divide-y divide-brown-900">
+            {context.surroundings.portableObjects.map((portable) => (
+              <div key={portable.objectRef} className="py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-white">{portable.item.name}</span>
+                  <span className="font-mono text-[11px] text-brown-200">
+                    {portable.objectRef}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-brown-200">
+                  {portable.poiName} / {portable.objectPath.join(' / ')}
+                </div>
+                {portable.item.description && (
+                  <div className="mt-1 text-sm leading-snug text-brown-100">
+                    {portable.item.description}
+                  </div>
+                )}
+              </div>
+            ))}
+            {context.surroundings.nearbyGroundItems.map((groundItem) => (
+              <div key={groundItem.id} className="py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-white">{groundItem.item.name}</span>
+                  <span className="font-mono text-[11px] text-brown-200">{groundItem.id}</span>
+                </div>
+                <div className="mt-1 text-xs text-brown-200">
+                  Ground at {positionLabel(groundItem.position)}
+                </div>
+                {groundItem.item.description && (
+                  <div className="mt-1 text-sm leading-snug text-brown-100">
+                    {groundItem.item.description}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Commerce">
+        {context.surroundings.commerceOptions.length === 0 ? (
+          <EmptyState>No shop-counter commerce options here.</EmptyState>
+        ) : (
+          <div className="divide-y divide-brown-900">
+            {context.surroundings.commerceOptions.map((commerce) => (
+              <div key={commerce.objectRef} className="py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-white">{commerce.objectName}</span>
+                  <span className="font-mono text-[11px] text-brown-200">
+                    {commerce.objectRef}
+                  </span>
+                </div>
+                <div className="mt-1 text-xs text-brown-200">
+                  Buys: {commerce.buy.map((item) => `${item.name} (${item.price})`).join(', ') || 'None'}
+                </div>
+                <div className="mt-1 text-xs text-brown-200">
+                  Accepts: {commerce.sellTags.join(', ') || 'None'}
+                </div>
               </div>
             ))}
           </div>

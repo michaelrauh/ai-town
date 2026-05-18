@@ -100,6 +100,7 @@ export function buildInspectorSearchRecords({
         title: `${name} current state`,
         excerpt: compact([
           context.currentPoi?.name,
+          `${context.coins} coins`,
           context.state.activity?.description,
           context.state.objectUse?.description,
           context.state.conversation?.id,
@@ -107,9 +108,25 @@ export function buildInspectorSearchRecords({
         ]),
         targetTab: 'characters',
         playerId: context.self.id,
-        values: [context.state, context.position],
+        values: [context.state, context.position, context.inventory, context.coins],
       }),
     );
+    for (const [slotIndex, item] of context.inventory.entries()) {
+      if (!item) {
+        continue;
+      }
+      records.push(
+        record({
+          id: `inventory:${context.self.id}:${slotIndex}`,
+          category: 'Inventory',
+          title: `${name} slot ${slotIndex + 1}: ${item.name}`,
+          excerpt: compact([item.description, item.tags.join(', '), item.sellPrice]),
+          targetTab: 'characters',
+          playerId: context.self.id,
+          values: [item],
+        }),
+      );
+    }
     for (const affordance of context.surroundings.nearbyAffordances) {
       records.push(
         record({
@@ -151,6 +168,54 @@ export function buildInspectorSearchRecords({
           targetTab: 'perception',
           playerId: context.self.id,
           values: [user],
+        }),
+      );
+    }
+    for (const item of context.surroundings.nearbyGroundItems) {
+      records.push(
+        record({
+          id: `ground-item:${context.self.id}:${item.id}`,
+          category: 'Ground Items',
+          title: `${item.item.name} nearby`,
+          excerpt: compact([item.item.description, item.item.tags.join(', '), item.item.sellPrice]),
+          targetTab: 'perception',
+          playerId: context.self.id,
+          values: [item],
+        }),
+      );
+    }
+    for (const portable of context.surroundings.portableObjects) {
+      records.push(
+        record({
+          id: `portable:${context.self.id}:${portable.objectRef}`,
+          category: 'Portable Objects',
+          title: `${portable.item.name} at ${portable.objectName}`,
+          excerpt: compact([
+            portable.poiName,
+            portable.item.description,
+            portable.item.tags.join(', '),
+            portable.item.sellPrice,
+          ]),
+          targetTab: 'perception',
+          playerId: context.self.id,
+          values: [portable],
+        }),
+      );
+    }
+    for (const commerce of context.surroundings.commerceOptions) {
+      records.push(
+        record({
+          id: `commerce:${context.self.id}:${commerce.objectRef}`,
+          category: 'Commerce',
+          title: `${commerce.objectName} commerce`,
+          excerpt: compact([
+            commerce.poiName,
+            commerce.buy.map((item) => `${item.name} ${item.price} coins`).join(', '),
+            commerce.sellTags.join(', '),
+          ]),
+          targetTab: 'perception',
+          playerId: context.self.id,
+          values: [commerce],
         }),
       );
     }

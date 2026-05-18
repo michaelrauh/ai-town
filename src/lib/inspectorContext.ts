@@ -1,10 +1,18 @@
 import { gameTimeOfDay } from '../../convex/constants';
+import { GROUND_ITEM_PICKUP_RADIUS } from '../../convex/aiTown/inventory';
+import type { GroundItem, InventorySlot } from '../../convex/aiTown/inventory';
 import type { GameId } from '../../convex/aiTown/ids';
 import type { Player } from '../../convex/aiTown/player';
 import type {
+  CommerceObjectContext,
   ObjectAffordance,
   Poi,
   PoiSubObject,
+  PortableObjectContext,
+} from '../../convex/aiTown/worldMap';
+import {
+  commerceOptionsForPosition,
+  portableObjectsForPosition,
 } from '../../convex/aiTown/worldMap';
 import type { ServerGame } from '../hooks/serverGame';
 
@@ -52,6 +60,8 @@ export type InspectorContext = {
     friends: string[];
   };
   currentTime: number;
+  coins: number;
+  inventory: InventorySlot[];
   position: {
     x: number;
     y: number;
@@ -84,6 +94,9 @@ export type InspectorContext = {
       objectUse: string | null;
     }>;
     objectUsers: InspectorObjectUser[];
+    nearbyGroundItems: GroundItem[];
+    portableObjects: PortableObjectContext[];
+    commerceOptions: CommerceObjectContext[];
     mapBounds: { width: number; height: number };
   };
   state: {
@@ -168,6 +181,8 @@ export function buildInspectorContext(
       friends: agentDescription?.friends ?? [],
     },
     currentTime,
+    coins: player.coins,
+    inventory: player.inventory,
     position: {
       x: player.position.x,
       y: player.position.y,
@@ -198,6 +213,13 @@ export function buildInspectorContext(
       nearbyAffordances: currentPoi ? flattenPoiAffordances(currentPoi) : [],
       nearbyPlayers: nearbyPlayers(game, player, currentPoi, currentTime),
       objectUsers: objectUsers(game, player, currentPoi, currentTime),
+      nearbyGroundItems: nearbyGroundItems(game, player),
+      portableObjects: portableObjectsForPosition(
+        game.worldMap.pois,
+        game.world.takenPoiItemRefs,
+        player.position,
+      ),
+      commerceOptions: commerceOptionsForPosition(game.worldMap.pois, player.position),
       mapBounds: { width: game.worldMap.width, height: game.worldMap.height },
     },
     state: {
@@ -347,6 +369,12 @@ function objectUsers(
       description: objectUse.description,
       until: objectUse.until,
     }));
+}
+
+function nearbyGroundItems(game: ServerGame, player: Player): GroundItem[] {
+  return [...game.world.groundItems.values()].filter(
+    (item) => pointDistance(player.position, item.position) <= GROUND_ITEM_PICKUP_RADIUS,
+  );
 }
 
 function isActive<T extends { until: number }>(item: T | undefined, currentTime: number): item is T {

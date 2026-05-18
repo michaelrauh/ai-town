@@ -9,13 +9,29 @@ import {
   MAX_HUMAN_PLAYERS,
   MAX_PATHFINDS_PER_STEP,
 } from '../constants';
-import { inBbox, pointsEqual, pathPosition } from '../util/geometry';
+import { distance, inBbox, pointsEqual, pathPosition } from '../util/geometry';
 import { Game } from './game';
 import { stopPlayer, findRoute, blocked, movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
 import { characters } from '../../data/characters';
 import { PlayerDescription } from './playerDescription';
-import { findAffordanceByRef, poiCenter } from './worldMap';
+import {
+  commerceItemToInventoryItem,
+  findAffordanceByRef,
+  findCommerceByRef,
+  findPortableByRef,
+  poiCenter,
+} from './worldMap';
+import {
+  GROUND_ITEM_PICKUP_RADIUS,
+  InventoryItem,
+  InventorySlot,
+  firstEmptySlot,
+  inventorySlot,
+  normalizeCoins,
+  normalizeInventory,
+} from './inventory';
+import { groundItemId } from './ids';
 
 export const stepDirection = v.union(
   v.literal('north'),
@@ -70,12 +86,44 @@ const useObjectRequestFields = {
 export const useObjectRequest = v.object(useObjectRequestFields);
 export type UseObjectRequest = Infer<typeof useObjectRequest>;
 
+const itemSource = v.union(
+  v.object({ kind: v.literal('poiObject'), objectRef: v.string() }),
+  v.object({ kind: v.literal('groundItem'), groundItemId }),
+);
+const pickUpItemRequestFields = {
+  source: itemSource,
+};
+export const pickUpItemRequest = v.object(pickUpItemRequestFields);
+export type PickUpItemRequest = Infer<typeof pickUpItemRequest>;
+
+const putDownItemRequestFields = {
+  slotIndex: v.number(),
+};
+export const putDownItemRequest = v.object(putDownItemRequestFields);
+export type PutDownItemRequest = Infer<typeof putDownItemRequest>;
+
+const buyItemRequestFields = {
+  objectRef: v.string(),
+  itemId: v.string(),
+};
+export const buyItemRequest = v.object(buyItemRequestFields);
+export type BuyItemRequest = Infer<typeof buyItemRequest>;
+
+const sellItemRequestFields = {
+  objectRef: v.string(),
+  slotIndex: v.number(),
+};
+export const sellItemRequest = v.object(sellItemRequestFields);
+export type SellItemRequest = Infer<typeof sellItemRequest>;
+
 export const serializedPlayer = {
   id: playerId,
   human: v.optional(v.string()),
   pathfinding: v.optional(pathfinding),
   activity: v.optional(activity),
   objectUse: v.optional(objectUse),
+  coins: v.optional(v.number()),
+  inventory: v.optional(v.array(inventorySlot)),
 
   // The last time they did something.
   lastInput: v.number(),
@@ -92,6 +140,8 @@ export class Player {
   pathfinding?: Pathfinding;
   activity?: Activity;
   objectUse?: ObjectUse;
+  coins: number;
+  inventory: InventorySlot[];
 
   lastInput: number;
 
@@ -100,13 +150,26 @@ export class Player {
   speed: number;
 
   constructor(serialized: SerializedPlayer) {
-    const { id, human, pathfinding, activity, objectUse, lastInput, position, facing, speed } =
-      serialized;
+    const {
+      id,
+      human,
+      pathfinding,
+      activity,
+      objectUse,
+      coins,
+      inventory,
+      lastInput,
+      position,
+      facing,
+      speed,
+    } = serialized;
     this.id = parseGameId('players', id);
     this.human = human;
     this.pathfinding = pathfinding;
     this.activity = activity;
     this.objectUse = objectUse;
+    this.coins = normalizeCoins(coins);
+    this.inventory = normalizeInventory(inventory);
     this.lastInput = lastInput;
     this.position = position;
     this.facing = facing;
@@ -291,14 +354,27 @@ export class Player {
   }
 
   serialize(): SerializedPlayer {
-    const { id, human, pathfinding, activity, objectUse, lastInput, position, facing, speed } =
-      this;
+    const {
+      id,
+      human,
+      pathfinding,
+      activity,
+      objectUse,
+      coins,
+      inventory,
+      lastInput,
+      position,
+      facing,
+      speed,
+    } = this;
     return {
       id,
       human,
       pathfinding,
       activity,
       objectUse,
+      coins,
+      inventory,
       lastInput,
       position,
       facing,
@@ -387,6 +463,153 @@ export function startObjectUse(game: Game, now: number, player: Player, request:
   return nextUse;
 }
 
+function assertCanInventoryAction(game: Game, player: Player, action: string) {
+  const conversation = game.world.playerConversation(player);
+  if (conversation?.participants.get(player.id)?.status.kind === 'participating') {
+    throw new Error(`Can't ${action} when in a conversation. Leave the conversation first!`);
+  }
+}
+
+function stopTransientPlayerState(player: Player) {
+  stopPlayer(player);
+  delete player.activity;
+  delete player.objectUse;
+}
+
+function addToFirstEmptySlot(player: Player, item: InventoryItem) {
+  const slotIndex = firstEmptySlot(player.inventory);
+  if (slotIndex < 0) {
+    throw new Error(`Inventory is full.`);
+  }
+  player.inventory[slotIndex] = item;
+  return slotIndex;
+}
+
+function itemAtSlot(player: Player, slotIndex: number) {
+  if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex >= player.inventory.length) {
+    throw new Error(`Invalid inventory slot ${slotIndex}.`);
+  }
+  const item = player.inventory[slotIndex];
+  if (!item) {
+    throw new Error(`Inventory slot ${slotIndex} is empty.`);
+  }
+  return item;
+}
+
+export function pickUpItem(
+  game: Game,
+  now: number,
+  player: Player,
+  request: PickUpItemRequest,
+) {
+  assertCanInventoryAction(game, player, 'pick up items');
+  let item: InventoryItem;
+  if (request.source.kind === 'poiObject') {
+    const { objectRef } = request.source;
+    if (game.world.takenPoiItemRefs.has(objectRef)) {
+      throw new Error(`${objectRef} has already been picked up.`);
+    }
+    const match = findPortableByRef(game.worldMap.pois, objectRef);
+    if (!match) {
+      throw new Error(`${objectRef} is not a portable object.`);
+    }
+    if (!inBbox(player.position, match.poi.bbox)) {
+      throw new Error(`Player ${player.id} is not near ${match.poi.name}`);
+    }
+    item = match.item;
+    stopTransientPlayerState(player);
+    const slotIndex = addToFirstEmptySlot(player, item);
+    game.world.takenPoiItemRefs.add(objectRef);
+    return { slotIndex, item };
+  }
+
+  const groundId = parseGameId('groundItems', request.source.groundItemId);
+  const groundItem = game.world.groundItems.get(groundId);
+  if (!groundItem) {
+    throw new Error(`Invalid ground item ${groundId}.`);
+  }
+  if (distance(player.position, groundItem.position) > GROUND_ITEM_PICKUP_RADIUS) {
+    throw new Error(`Player ${player.id} is not near ${groundItem.item.name}.`);
+  }
+  item = groundItem.item;
+  stopTransientPlayerState(player);
+  const slotIndex = addToFirstEmptySlot(player, item);
+  game.world.groundItems.delete(groundId);
+  return { slotIndex, item };
+}
+
+export function putDownItem(
+  game: Game,
+  now: number,
+  player: Player,
+  request: PutDownItemRequest,
+) {
+  assertCanInventoryAction(game, player, 'put down items');
+  const item = itemAtSlot(player, request.slotIndex);
+  const groundId = game.allocId('groundItems');
+  const groundItem = {
+    id: groundId,
+    item,
+    position: {
+      x: Math.floor(player.position.x),
+      y: Math.floor(player.position.y),
+    },
+    droppedAt: now,
+    droppedBy: player.id,
+  };
+  stopTransientPlayerState(player);
+  player.inventory[request.slotIndex] = null;
+  game.world.groundItems.set(groundId, groundItem);
+  return groundItem;
+}
+
+export function buyItem(game: Game, now: number, player: Player, request: BuyItemRequest) {
+  assertCanInventoryAction(game, player, 'buy items');
+  const match = findCommerceByRef(game.worldMap.pois, request.objectRef);
+  if (!match) {
+    throw new Error(`${request.objectRef} is not a shop counter.`);
+  }
+  if (!inBbox(player.position, match.poi.bbox)) {
+    throw new Error(`Player ${player.id} is not in ${match.poi.name}.`);
+  }
+  const itemForSale = match.commerce.buy.find((item) => item.itemId === request.itemId);
+  if (!itemForSale) {
+    throw new Error(`${request.itemId} is not for sale at ${match.object.name}.`);
+  }
+  if (player.coins < itemForSale.price) {
+    throw new Error(`Not enough coins to buy ${itemForSale.name}.`);
+  }
+  const item = commerceItemToInventoryItem(itemForSale);
+  stopTransientPlayerState(player);
+  const slotIndex = addToFirstEmptySlot(player, item);
+  player.coins -= itemForSale.price;
+  return { slotIndex, item, coins: player.coins };
+}
+
+export function sellItem(game: Game, now: number, player: Player, request: SellItemRequest) {
+  assertCanInventoryAction(game, player, 'sell items');
+  const match = findCommerceByRef(game.worldMap.pois, request.objectRef);
+  if (!match) {
+    throw new Error(`${request.objectRef} is not a shop counter.`);
+  }
+  if (!inBbox(player.position, match.poi.bbox)) {
+    throw new Error(`Player ${player.id} is not in ${match.poi.name}.`);
+  }
+  const item = itemAtSlot(player, request.slotIndex);
+  const accepted = item.tags.some((tag) => match.commerce.sellTags.includes(tag));
+  if (!accepted) {
+    throw new Error(`${item.name} cannot be sold at ${match.object.name}.`);
+  }
+  const sellPrice = item.sellPrice ?? 0;
+  if (sellPrice <= 0) {
+    throw new Error(`${item.name} has no sell price.`);
+  }
+  stopTransientPlayerState(player);
+  player.inventory[request.slotIndex] = null;
+  player.coins += sellPrice;
+  return { item, coins: player.coins };
+}
+
 export const playerInputs = {
   join: inputHandler({
     args: {
@@ -443,6 +666,62 @@ export const playerInputs = {
         throw new Error(`Invalid player ID ${playerId}`);
       }
       return startObjectUse(game, now, player, args);
+    },
+  }),
+  pickUpItem: inputHandler({
+    args: {
+      playerId,
+      ...pickUpItemRequestFields,
+    },
+    handler: (game, now, args) => {
+      const playerId = parseGameId('players', args.playerId);
+      const player = game.world.players.get(playerId);
+      if (!player) {
+        throw new Error(`Invalid player ID ${playerId}`);
+      }
+      return pickUpItem(game, now, player, args);
+    },
+  }),
+  putDownItem: inputHandler({
+    args: {
+      playerId,
+      ...putDownItemRequestFields,
+    },
+    handler: (game, now, args) => {
+      const playerId = parseGameId('players', args.playerId);
+      const player = game.world.players.get(playerId);
+      if (!player) {
+        throw new Error(`Invalid player ID ${playerId}`);
+      }
+      return putDownItem(game, now, player, args);
+    },
+  }),
+  buyItem: inputHandler({
+    args: {
+      playerId,
+      ...buyItemRequestFields,
+    },
+    handler: (game, now, args) => {
+      const playerId = parseGameId('players', args.playerId);
+      const player = game.world.players.get(playerId);
+      if (!player) {
+        throw new Error(`Invalid player ID ${playerId}`);
+      }
+      return buyItem(game, now, player, args);
+    },
+  }),
+  sellItem: inputHandler({
+    args: {
+      playerId,
+      ...sellItemRequestFields,
+    },
+    handler: (game, now, args) => {
+      const playerId = parseGameId('players', args.playerId);
+      const player = game.world.players.get(playerId);
+      if (!player) {
+        throw new Error(`Invalid player ID ${playerId}`);
+      }
+      return sellItem(game, now, player, args);
     },
   }),
   stepPlayer: inputHandler({

@@ -56,7 +56,9 @@ export function PixiPois({ game, currentTime }: { game: ServerGame; currentTime:
         const y = p.bbox.y * tileDim;
         const w = p.bbox.w * tileDim;
         const h = p.bbox.h * tileDim;
-        const objects = layoutPoiObjects(p, tileDim);
+        const objects = layoutPoiObjects(p, tileDim).filter(
+          (object) => !object.portable || !game.world.takenPoiItemRefs.has(object.objectRef),
+        );
         const objectByRef = new Map(objects.map((object) => [object.objectRef, object]));
         return (
           <Container key={p.id} eventMode="none">
@@ -131,6 +133,11 @@ function ObjectConnectors({
 
 function ObjectMarker({ object, users }: { object: LaidOutPoiObject; users: ObjectUserBadge[] }) {
   const affordanceText = object.affordances.map((affordance) => affordance.name).join(', ');
+  const portableText = object.portable
+    ? `Pickup: ${object.portable.name ?? object.objectName}`
+    : '';
+  const commerceText = object.commerce ? 'Buy / sell' : '';
+  const detailText = [affordanceText, portableText, commerceText].filter(Boolean).join(' / ');
   const userText = users.map((user) => `${user.playerName}: ${user.affordanceName}`).join(' / ');
   return (
     <Container eventMode="none">
@@ -140,7 +147,7 @@ function ObjectMarker({ object, users }: { object: LaidOutPoiObject; users: Obje
           g.clear();
           const markerW = Math.max(18, Math.min(54, object.objectName.length * 5 + 12));
           const markerH = 16;
-          g.beginFill(markerColor(object.depth), 0.92);
+          g.beginFill(markerColor(object), 0.92);
           g.lineStyle(2, 0x181425, 0.95);
           g.drawRoundedRect(object.xPx - markerW / 2, object.yPx - markerH / 2, markerW, markerH, 4);
           g.endFill();
@@ -156,9 +163,9 @@ function ObjectMarker({ object, users }: { object: LaidOutPoiObject; users: Obje
         anchor={0.5}
         style={objectNameStyle}
       />
-      {affordanceText && (
+      {detailText && (
         <Text
-          text={affordanceText}
+          text={detailText}
           x={object.xPx}
           y={object.yPx + 14}
           anchor={0.5}
@@ -231,7 +238,13 @@ function outlineColorForKind(kind: string) {
   }
 }
 
-function markerColor(depth: number) {
+function markerColor(object: LaidOutPoiObject) {
+  if (object.commerce) {
+    return 0xd08159;
+  }
+  if (object.portable) {
+    return 0xd6b86f;
+  }
   const colors = [0xb86f50, 0x5a6988, 0xe4a672, 0x8b9bb4];
-  return colors[depth % colors.length];
+  return colors[object.depth % colors.length];
 }

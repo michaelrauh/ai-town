@@ -1,4 +1,5 @@
 import { Infer, ObjectType, v } from 'convex/values';
+import type { InventoryItem } from './inventory';
 
 // `layer[position.x][position.y]` is the tileIndex or -1 if empty.
 const tileLayer = v.array(v.array(v.number()));
@@ -43,11 +44,37 @@ export type ObjectAffordance = {
   defaultDurationMs?: number;
 };
 
+export type PortableObjectMetadata = {
+  itemId: string;
+  name?: string;
+  description?: string;
+  emoji?: string;
+  tags?: string[];
+  sellPrice?: number;
+};
+
+export type CommerceItem = {
+  itemId: string;
+  name: string;
+  description?: string;
+  emoji?: string;
+  tags: string[];
+  price: number;
+  sellPrice?: number;
+};
+
+export type CommerceMetadata = {
+  buy: CommerceItem[];
+  sellTags: string[];
+};
+
 export type PoiSubObject = {
   id: string;
   name: string;
   description?: string;
   affordances: ObjectAffordance[];
+  portable?: PortableObjectMetadata;
+  commerce?: CommerceMetadata;
   subObjects?: PoiSubObject[];
 };
 
@@ -71,6 +98,25 @@ export type NearbyAffordance = {
   description?: string;
   emoji?: string;
   defaultDurationMs?: number;
+};
+
+export type PortableObjectContext = {
+  poiId: string;
+  poiName: string;
+  objectRef: string;
+  objectPath: string[];
+  objectName: string;
+  item: InventoryItem;
+};
+
+export type CommerceObjectContext = {
+  poiId: string;
+  poiName: string;
+  objectRef: string;
+  objectPath: string[];
+  objectName: string;
+  buy: CommerceItem[];
+  sellTags: string[];
 };
 
 export const serializedWorldMap = {
@@ -158,6 +204,21 @@ function assertOptionalNumber(value: unknown, label: string): asserts value is n
   }
 }
 
+function assertStringArray(value: unknown, label: string): asserts value is string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || item.length === 0)) {
+    throw new Error(`${label} must be an array of non-empty strings`);
+  }
+}
+
+function assertOptionalStringArray(
+  value: unknown,
+  label: string,
+): asserts value is string[] | undefined {
+  if (value !== undefined) {
+    assertStringArray(value, label);
+  }
+}
+
 function validateAffordance(value: unknown, context: string): asserts value is ObjectAffordance {
   if (!value || typeof value !== 'object') {
     throw new Error(`${context} must be an object`);
@@ -168,6 +229,50 @@ function validateAffordance(value: unknown, context: string): asserts value is O
   assertOptionalString(candidate.description, `${context}.description`);
   assertOptionalString(candidate.emoji, `${context}.emoji`);
   assertOptionalNumber(candidate.defaultDurationMs, `${context}.defaultDurationMs`);
+}
+
+function validatePortable(
+  value: unknown,
+  context: string,
+): asserts value is PortableObjectMetadata {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`${context} must be an object`);
+  }
+  const candidate = value as Record<string, unknown>;
+  assertString(candidate.itemId, `${context}.itemId`);
+  assertOptionalString(candidate.name, `${context}.name`);
+  assertOptionalString(candidate.description, `${context}.description`);
+  assertOptionalString(candidate.emoji, `${context}.emoji`);
+  assertOptionalStringArray(candidate.tags, `${context}.tags`);
+  assertOptionalNumber(candidate.sellPrice, `${context}.sellPrice`);
+}
+
+function validateCommerceItem(value: unknown, context: string): asserts value is CommerceItem {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`${context} must be an object`);
+  }
+  const candidate = value as Record<string, unknown>;
+  assertString(candidate.itemId, `${context}.itemId`);
+  assertString(candidate.name, `${context}.name`);
+  assertOptionalString(candidate.description, `${context}.description`);
+  assertOptionalString(candidate.emoji, `${context}.emoji`);
+  assertStringArray(candidate.tags, `${context}.tags`);
+  assertOptionalNumber(candidate.sellPrice, `${context}.sellPrice`);
+  if (typeof candidate.price !== 'number' || candidate.price < 0) {
+    throw new Error(`${context}.price must be a non-negative number`);
+  }
+}
+
+function validateCommerce(value: unknown, context: string): asserts value is CommerceMetadata {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`${context} must be an object`);
+  }
+  const candidate = value as Record<string, unknown>;
+  if (!Array.isArray(candidate.buy)) {
+    throw new Error(`${context}.buy must be an array`);
+  }
+  candidate.buy.forEach((item, index) => validateCommerceItem(item, `${context}.buy[${index}]`));
+  assertStringArray(candidate.sellTags, `${context}.sellTags`);
 }
 
 export function validatePoiSubObjects(
@@ -192,6 +297,12 @@ export function validatePoiSubObjects(
     candidate.affordances.forEach((a, affordanceIndex) =>
       validateAffordance(a, `${objectContext}.affordances[${affordanceIndex}]`),
     );
+    if (candidate.portable !== undefined) {
+      validatePortable(candidate.portable, `${objectContext}.portable`);
+    }
+    if (candidate.commerce !== undefined) {
+      validateCommerce(candidate.commerce, `${objectContext}.commerce`);
+    }
     if (candidate.subObjects !== undefined) {
       validatePoiSubObjects(candidate.subObjects, `${objectContext}.subObjects`);
     }
@@ -252,6 +363,88 @@ export function nearbyAffordancesForPosition(pois: Poi[], position: { x: number;
     .flatMap((p) => collectObjectAffordances(p, p.subObjects));
 }
 
+function itemFromPortable(object: PoiSubObject, objectRef: string): InventoryItem | null {
+  if (!object.portable) {
+    return null;
+  }
+  return {
+    itemId: object.portable.itemId,
+    name: object.portable.name ?? object.name,
+    description: object.portable.description ?? object.description,
+    emoji: object.portable.emoji,
+    tags: object.portable.tags ?? [],
+    sellPrice: object.portable.sellPrice,
+    sourceObjectRef: objectRef,
+  };
+}
+
+function collectPortableObjects(
+  poi: Poi,
+  takenRefs: Set<string>,
+  objects: PoiSubObject[] | undefined,
+  path: string[] = [],
+): PortableObjectContext[] {
+  const result: PortableObjectContext[] = [];
+  for (const object of objects ?? []) {
+    const objectPath = [...path, object.id];
+    const objectRef = poiObjectRef(poi.id, objectPath);
+    const item = itemFromPortable(object, objectRef);
+    if (item && !takenRefs.has(objectRef)) {
+      result.push({
+        poiId: poi.id,
+        poiName: poi.name,
+        objectRef,
+        objectPath,
+        objectName: object.name,
+        item,
+      });
+    }
+    result.push(...collectPortableObjects(poi, takenRefs, object.subObjects, objectPath));
+  }
+  return result;
+}
+
+function collectCommerceObjects(
+  poi: Poi,
+  objects: PoiSubObject[] | undefined,
+  path: string[] = [],
+): CommerceObjectContext[] {
+  const result: CommerceObjectContext[] = [];
+  for (const object of objects ?? []) {
+    const objectPath = [...path, object.id];
+    const objectRef = poiObjectRef(poi.id, objectPath);
+    if (object.commerce) {
+      result.push({
+        poiId: poi.id,
+        poiName: poi.name,
+        objectRef,
+        objectPath,
+        objectName: object.name,
+        buy: object.commerce.buy,
+        sellTags: object.commerce.sellTags,
+      });
+    }
+    result.push(...collectCommerceObjects(poi, object.subObjects, objectPath));
+  }
+  return result;
+}
+
+export function portableObjectsForPosition(
+  pois: Poi[],
+  takenRefs: Set<string>,
+  position: { x: number; y: number },
+) {
+  return pois
+    .filter((p) => pointInBbox(position, p.bbox))
+    .flatMap((p) => collectPortableObjects(p, takenRefs, p.subObjects));
+}
+
+export function commerceOptionsForPosition(pois: Poi[], position: { x: number; y: number }) {
+  return pois
+    .filter((p) => pointInBbox(position, p.bbox) && p.kind === 'shop')
+    .flatMap((p) => collectCommerceObjects(p, p.subObjects));
+}
+
 function findObjectByPath(
   objects: PoiSubObject[] | undefined,
   path: string[],
@@ -267,7 +460,7 @@ function findObjectByPath(
   return tail.length === 0 ? object : findObjectByPath(object.subObjects, tail);
 }
 
-export function findAffordanceByRef(pois: Poi[], objectRef: string, affordanceId: string) {
+export function findPoiObjectByRef(pois: Poi[], objectRef: string) {
   const [poiId, ...objectPath] = objectRef.split('/').filter(Boolean);
   if (!poiId || objectPath.length === 0) {
     return null;
@@ -277,9 +470,49 @@ export function findAffordanceByRef(pois: Poi[], objectRef: string, affordanceId
     return null;
   }
   const object = findObjectByPath(poi.subObjects, objectPath);
-  const affordance = object?.affordances.find((a) => a.id === affordanceId);
-  if (!object || !affordance) {
+  if (!object) {
     return null;
   }
-  return { poi, object, affordance, objectPath };
+  return { poi, object, objectPath };
+}
+
+export function findPortableByRef(pois: Poi[], objectRef: string) {
+  const match = findPoiObjectByRef(pois, objectRef);
+  if (!match) {
+    return null;
+  }
+  const item = itemFromPortable(match.object, objectRef);
+  if (!item) {
+    return null;
+  }
+  return { ...match, item };
+}
+
+export function findCommerceByRef(pois: Poi[], objectRef: string) {
+  const match = findPoiObjectByRef(pois, objectRef);
+  if (!match || !match.object.commerce || match.poi.kind !== 'shop') {
+    return null;
+  }
+  return { ...match, commerce: match.object.commerce };
+}
+
+export function commerceItemToInventoryItem(item: CommerceItem): InventoryItem {
+  return {
+    itemId: item.itemId,
+    name: item.name,
+    description: item.description,
+    emoji: item.emoji,
+    tags: item.tags,
+    sellPrice: item.sellPrice,
+  };
+}
+
+export function findAffordanceByRef(pois: Poi[], objectRef: string, affordanceId: string) {
+  const match = findPoiObjectByRef(pois, objectRef);
+  const object = match?.object;
+  const affordance = object?.affordances.find((a) => a.id === affordanceId);
+  if (!match || !object || !affordance) {
+    return null;
+  }
+  return { ...match, affordance };
 }

@@ -4,6 +4,7 @@ import { Player, serializedPlayer } from './player';
 import { Agent, serializedAgent } from './agent';
 import { GameId, parseGameId, playerId } from './ids';
 import { parseMap } from '../util/object';
+import { GroundItem, groundItem } from './inventory';
 
 export const historicalLocations = v.array(
   v.object({
@@ -17,6 +18,8 @@ export const serializedWorld = {
   conversations: v.array(v.object(serializedConversation)),
   players: v.array(v.object(serializedPlayer)),
   agents: v.array(v.object(serializedAgent)),
+  groundItems: v.optional(v.array(groundItem)),
+  takenPoiItemRefs: v.optional(v.array(v.string())),
   historicalLocations: v.optional(historicalLocations),
 };
 export type SerializedWorld = ObjectType<typeof serializedWorld>;
@@ -26,6 +29,8 @@ export class World {
   conversations: Map<GameId<'conversations'>, Conversation>;
   players: Map<GameId<'players'>, Player>;
   agents: Map<GameId<'agents'>, Agent>;
+  groundItems: Map<GameId<'groundItems'>, GroundItem>;
+  takenPoiItemRefs: Set<string>;
   historicalLocations?: Map<GameId<'players'>, ArrayBuffer>;
 
   constructor(serialized: SerializedWorld) {
@@ -35,6 +40,15 @@ export class World {
     this.conversations = parseMap(serialized.conversations, Conversation, (c) => c.id);
     this.players = parseMap(serialized.players, Player, (p) => p.id);
     this.agents = parseMap(serialized.agents, Agent, (a) => a.id);
+    this.groundItems = new Map();
+    for (const item of serialized.groundItems ?? []) {
+      const id = parseGameId('groundItems', item.id);
+      if (this.groundItems.has(id)) {
+        throw new Error(`Duplicate ground item ID ${id}`);
+      }
+      this.groundItems.set(id, item);
+    }
+    this.takenPoiItemRefs = new Set(serialized.takenPoiItemRefs ?? []);
 
     if (historicalLocations) {
       this.historicalLocations = new Map();
@@ -54,6 +68,8 @@ export class World {
       conversations: [...this.conversations.values()].map((c) => c.serialize()),
       players: [...this.players.values()].map((p) => p.serialize()),
       agents: [...this.agents.values()].map((a) => a.serialize()),
+      groundItems: [...this.groundItems.values()],
+      takenPoiItemRefs: [...this.takenPoiItemRefs.values()],
       historicalLocations:
         this.historicalLocations &&
         [...this.historicalLocations.entries()].map(([playerId, location]) => ({

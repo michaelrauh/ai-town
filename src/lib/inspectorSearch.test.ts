@@ -28,7 +28,10 @@ function makeServerGame() {
       world: {
         nextId: 10,
         players: [
-          player('p:1', { x: 2, y: 2 }),
+          player('p:1', { x: 2, y: 2 }, {
+            coins: 12,
+            inventory: [{ itemId: 'old-map', name: 'Old map', tags: ['curio'], sellPrice: 3 }],
+          }),
           player('p:2', { x: 3, y: 2 }, {
             objectUse: {
               objectRef: 'cafe/kitchen/burner',
@@ -40,6 +43,15 @@ function makeServerGame() {
             },
           }),
         ],
+        groundItems: [
+          {
+            id: 'g:1',
+            item: { itemId: 'loose-cookie', name: 'Loose cookie', tags: ['food'], sellPrice: 2 },
+            position: { x: 2, y: 2 },
+            droppedAt: 0,
+          },
+        ],
+        takenPoiItemRefs: [],
         conversations: [
           {
             id: 'c:1',
@@ -118,6 +130,41 @@ function cafePoi(): Poi {
             id: 'burner',
             name: 'Burner',
             affordances: [{ id: 'ignite', name: 'Ignite' }],
+          },
+        ],
+      },
+      {
+        id: 'counter',
+        name: 'Counter',
+        affordances: [],
+        commerce: {
+          buy: [
+            {
+              itemId: 'coffee-cup',
+              name: 'Coffee cup',
+              tags: ['food', 'drink'],
+              price: 4,
+              sellPrice: 1,
+            },
+          ],
+          sellTags: ['food', 'drink', 'curio'],
+        },
+      },
+      {
+        id: 'bookshelf',
+        name: 'Bookshelf',
+        affordances: [],
+        subObjects: [
+          {
+            id: 'field-notes',
+            name: 'Field notes',
+            affordances: [],
+            portable: {
+              itemId: 'field-notes',
+              name: 'Field notes',
+              tags: ['book', 'curio'],
+              sellPrice: 5,
+            },
           },
         ],
       },
@@ -207,6 +254,26 @@ describe('inspector search', () => {
     expect(searchInspectorRecords(records, 'igniting the burner')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ category: 'Object Use', targetTab: 'perception', playerId: 'p:1' }),
+      ]),
+    );
+    expect(searchInspectorRecords(records, 'old map')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'Inventory', targetTab: 'characters', playerId: 'p:1' }),
+      ]),
+    );
+    expect(searchInspectorRecords(records, 'loose cookie')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'Ground Items', targetTab: 'perception', playerId: 'p:1' }),
+      ]),
+    );
+    expect(searchInspectorRecords(records, 'field notes')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'Portable Objects', targetTab: 'perception', playerId: 'p:1' }),
+      ]),
+    );
+    expect(searchInspectorRecords(records, 'coffee cup')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'Commerce', targetTab: 'perception', playerId: 'p:1' }),
       ]),
     );
   });

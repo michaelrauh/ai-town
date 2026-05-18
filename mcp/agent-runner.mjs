@@ -22,6 +22,9 @@ const SCHEDULE_BLOCKS = ['morning', 'midday', 'afternoon', 'evening', 'night'];
 const NEARBY_PLAYER_DISTANCE_TILES = 6;
 const MEMORY_SEARCH_LIMIT = 3;
 const MAX_CONTEXT_MEMORIES = 8;
+const INVENTORY_SLOT_COUNT = 3;
+const STARTING_COINS = 20;
+const GROUND_ITEM_PICKUP_RADIUS = 1.5;
 
 const WIPE_RACE_PATTERNS = [
   'mcp agent operation',
@@ -217,6 +220,104 @@ function collectAffordances(poi, objects, path = []) {
   return result;
 }
 
+function normalizeInventory(inventory) {
+  const slots = Array.isArray(inventory) ? inventory.slice(0, INVENTORY_SLOT_COUNT) : [];
+  while (slots.length < INVENTORY_SLOT_COUNT) {
+    slots.push(null);
+  }
+  return slots;
+}
+
+function normalizeCoins(coins) {
+  return Number.isFinite(coins) ? Math.max(0, Math.floor(coins)) : STARTING_COINS;
+}
+
+function itemFromPortable(object, objectRef) {
+  if (!object.portable) {
+    return null;
+  }
+  return {
+    itemId: object.portable.itemId,
+    name: object.portable.name ?? object.name,
+    description: object.portable.description ?? object.description ?? null,
+    emoji: object.portable.emoji ?? null,
+    tags: object.portable.tags ?? [],
+    sellPrice: object.portable.sellPrice ?? null,
+    sourceObjectRef: objectRef,
+  };
+}
+
+function collectPortableObjects(poi, objects, takenRefs, path = []) {
+  const result = [];
+  for (const object of objects ?? []) {
+    const objectPath = [...path, object.id];
+    const objectRef = objectRefFor(poi.id, objectPath);
+    const item = itemFromPortable(object, objectRef);
+    if (item && !takenRefs.has(objectRef)) {
+      result.push({
+        poiId: poi.id,
+        poiName: poi.name,
+        objectRef,
+        objectPath,
+        objectName: object.name,
+        item,
+      });
+    }
+    result.push(...collectPortableObjects(poi, object.subObjects, takenRefs, objectPath));
+  }
+  return result;
+}
+
+function portableObjectsForPosition(snapshot, position) {
+  const currentPoi = currentPoiForPosition(snapshot.worldMap?.pois ?? [], position);
+  if (!currentPoi) {
+    return [];
+  }
+  const takenRefs = new Set(snapshot.world?.takenPoiItemRefs ?? []);
+  return collectPortableObjects(currentPoi, currentPoi.subObjects, takenRefs);
+}
+
+function collectCommerceOptions(poi, objects, path = []) {
+  const result = [];
+  for (const object of objects ?? []) {
+    const objectPath = [...path, object.id];
+    const objectRef = objectRefFor(poi.id, objectPath);
+    if (object.commerce) {
+      result.push({
+        poiId: poi.id,
+        poiName: poi.name,
+        objectRef,
+        objectPath,
+        objectName: object.name,
+        buy: object.commerce.buy ?? [],
+        sellTags: object.commerce.sellTags ?? [],
+      });
+    }
+    result.push(...collectCommerceOptions(poi, object.subObjects, objectPath));
+  }
+  return result;
+}
+
+function commerceOptionsForPosition(worldMap, position) {
+  const currentPoi = currentPoiForPosition(worldMap?.pois ?? [], position);
+  if (!currentPoi || currentPoi.kind !== 'shop') {
+    return [];
+  }
+  return collectCommerceOptions(currentPoi, currentPoi.subObjects);
+}
+
+function nearbyGroundItems(snapshot, position) {
+  return (snapshot.world?.groundItems ?? [])
+    .filter((item) => distance(position, item.position) <= GROUND_ITEM_PICKUP_RADIUS)
+    .map((item) => ({
+      id: item.id,
+      item: item.item,
+      position: item.position,
+      droppedAt: item.droppedAt ?? null,
+      droppedBy: item.droppedBy ?? null,
+    }));
+}
+
 export function nearbyAffordancesForPosition(worldMap, position) {
   const currentPoi = currentPoiForPosition(worldMap?.pois ?? [], position);
   if (!currentPoi) {
@@ -367,10 +468,14 @@ export function buildAgentContext(snapshot, args, extras = {}) {
     : null;
   const currentPoi = currentPoiForPosition(snapshot.worldMap.pois ?? [], player.position);
   const nearbyAffordances = nearbyAffordancesForPosition(snapshot.worldMap, player.position);
+  const inventory = normalizeInventory(player.inventory);
+  const coins = normalizeCoins(player.coins);
   return {
     self,
     currentTime: now,
     position: player.position,
+    inventory,
+    coins,
     currentPoi: compactPoi(currentPoi),
     schedule: {
       currentBlock: block,
@@ -383,6 +488,9 @@ export function buildAgentContext(snapshot, args, extras = {}) {
       nearbyAffordances,
       nearbyPlayers: nearbyPlayers(snapshot, player, currentPoi, now),
       objectUsers: objectUsers(snapshot, player, currentPoi, now),
+      nearbyGroundItems: nearbyGroundItems(snapshot, player.position),
+      portableObjects: portableObjectsForPosition(snapshot, player.position),
+      commerceOptions: commerceOptionsForPosition(snapshot.worldMap, player.position),
       map: {
         width: snapshot.worldMap.width,
         height: snapshot.worldMap.height,
@@ -436,11 +544,63 @@ function defaultDeps() {
   };
 }
 
+function occupiedInventorySlots(context) {
+  return context.inventory
+    .map((item, slotIndex) => (item ? { item, slotIndex } : null))
+    .filter(Boolean);
+}
+
+function hasEmptyInventorySlot(context) {
+  return context.inventory.some((item) => item === null);
+}
+
+function pickupOptionIds(context) {
+  if (!hasEmptyInventorySlot(context)) {
+    return [];
+  }
+  return [
+    ...context.surroundings.portableObjects.map((item) => `poi:${item.objectRef}`),
+    ...context.surroundings.nearbyGroundItems.map((item) => `ground:${item.id}`),
+  ];
+}
+
+function buyOptionIds(context) {
+  if (!hasEmptyInventorySlot(context)) {
+    return [];
+  }
+  return context.surroundings.commerceOptions.flatMap((commerce) =>
+    commerce.buy
+      .filter((item) => item.price <= context.coins)
+      .map((item) => `${commerce.objectRef}#${item.itemId}`),
+  );
+}
+
+function sellOptionIds(context) {
+  return context.surroundings.commerceOptions.flatMap((commerce) =>
+    occupiedInventorySlots(context)
+      .filter(({ item }) => {
+        const sellPrice = item.sellPrice ?? 0;
+        return sellPrice > 0 && item.tags?.some((tag) => commerce.sellTags.includes(tag));
+      })
+      .map(({ slotIndex }) => `${commerce.objectRef}#slot-${slotIndex}`),
+  );
+}
+
+function enumStringOrNull(ids) {
+  return ids.length > 0
+    ? { anyOf: [{ type: 'string', enum: ids }, { type: 'null' }] }
+    : { type: 'null' };
+}
+
 function doSomethingSchema(args, context) {
   const freeIds = args.otherFreePlayers.map((p) => p.id);
   const hasFree = freeIds.length > 0;
   const nearbyAffordanceIds = context.surroundings.nearbyAffordances.map((a) => a.id);
   const hasAffordances = nearbyAffordanceIds.length > 0;
+  const pickupIds = pickupOptionIds(context);
+  const putDownSlots = occupiedInventorySlots(context).map(({ slotIndex }) => slotIndex);
+  const buyIds = buyOptionIds(context);
+  const sellIds = sellOptionIds(context);
   const actionEnum = ['wander', 'activity'];
   if (hasFree) {
     actionEnum.push('invite');
@@ -448,12 +608,26 @@ function doSomethingSchema(args, context) {
   if (hasAffordances) {
     actionEnum.push('useObject');
   }
+  if (pickupIds.length > 0) {
+    actionEnum.push('pickUpItem');
+  }
+  if (putDownSlots.length > 0) {
+    actionEnum.push('putDownItem');
+  }
+  if (buyIds.length > 0) {
+    actionEnum.push('buyItem');
+  }
+  if (sellIds.length > 0) {
+    actionEnum.push('sellItem');
+  }
   const inviteeProperty = hasFree
     ? { anyOf: [{ type: 'string', enum: freeIds }, { type: 'null' }] }
     : { type: 'null' };
-  const useObjectProperty = hasAffordances
-    ? { anyOf: [{ type: 'string', enum: nearbyAffordanceIds }, { type: 'null' }] }
-    : { type: 'null' };
+  const useObjectProperty = enumStringOrNull(nearbyAffordanceIds);
+  const putDownSlotProperty =
+    putDownSlots.length > 0
+      ? { anyOf: [{ type: 'integer', enum: putDownSlots }, { type: 'null' }] }
+      : { type: 'null' };
   return {
     type: 'object',
     properties: {
@@ -465,8 +639,25 @@ function doSomethingSchema(args, context) {
       durationMs: { type: ['integer', 'null'] },
       invitee: inviteeProperty,
       useObject: useObjectProperty,
+      pickUpItem: enumStringOrNull(pickupIds),
+      putDownSlot: putDownSlotProperty,
+      buyItem: enumStringOrNull(buyIds),
+      sellItem: enumStringOrNull(sellIds),
     },
-    required: ['action', 'x', 'y', 'description', 'emoji', 'durationMs', 'invitee', 'useObject'],
+    required: [
+      'action',
+      'x',
+      'y',
+      'description',
+      'emoji',
+      'durationMs',
+      'invitee',
+      'useObject',
+      'pickUpItem',
+      'putDownSlot',
+      'buyItem',
+      'sellItem',
+    ],
     additionalProperties: false,
   };
 }
@@ -478,12 +669,15 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
   const currentContext = buildAgentContext(snapshot, args, { relatedMemories });
   const schema = doSomethingSchema(args, currentContext);
   const nearbyAffordances = currentContext.surroundings.nearbyAffordances;
+  const pickupIds = pickupOptionIds(currentContext);
+  const buyIds = buyOptionIds(currentContext);
+  const sellIds = sellOptionIds(currentContext);
   const decision = await deps.llmSchema(
     [
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, or useObject. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, memories, and current state to make a choice in character. Prefer place-appropriate object affordances when they match the scheduled activity.',
+          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, useObject, pickUpItem, putDownItem, buyItem, or sellItem. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. For pickUpItem, buyItem, sellItem, and putDownItem, choose only an id or slot listed in the schema and currentContext; do not invent items, money, shop stock, or inventory slots. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, inventory, coins, memories, and current state to make a choice in character.',
       },
       {
         role: 'user',
@@ -499,7 +693,20 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
     schema,
     'do_something_decision',
   );
-  const { action, x, y, description, emoji, durationMs, invitee, useObject } = decision;
+  const {
+    action,
+    x,
+    y,
+    description,
+    emoji,
+    durationMs,
+    invitee,
+    useObject,
+    pickUpItem,
+    putDownSlot,
+    buyItem,
+    sellItem,
+  } = decision;
   if (action === 'wander') {
     if (x == null || y == null) {
       throw new Error('wander action missing x or y');
@@ -548,6 +755,63 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
       objectRef: selected.objectRef,
       affordanceId: selected.affordanceId,
       durationMs: durationMs ?? selected.defaultDurationMs,
+    });
+  } else if (action === 'pickUpItem') {
+    if (!pickUpItem || !pickupIds.includes(pickUpItem)) {
+      throw new Error(`pickUpItem action selected unavailable item ${pickUpItem}`);
+    }
+    if (pickUpItem.startsWith('poi:')) {
+      await deps.callTool('aitown.do_pick_up_item', {
+        worldId: operation.worldId,
+        agentId: args.agent.id,
+        operationId: operation.operationId,
+        sourceKind: 'poiObject',
+        objectRef: pickUpItem.slice('poi:'.length),
+      });
+    } else if (pickUpItem.startsWith('ground:')) {
+      await deps.callTool('aitown.do_pick_up_item', {
+        worldId: operation.worldId,
+        agentId: args.agent.id,
+        operationId: operation.operationId,
+        sourceKind: 'groundItem',
+        groundItemId: pickUpItem.slice('ground:'.length),
+      });
+    } else {
+      throw new Error(`pickUpItem action selected invalid source ${pickUpItem}`);
+    }
+  } else if (action === 'putDownItem') {
+    if (!Number.isInteger(putDownSlot)) {
+      throw new Error('putDownItem action missing slot');
+    }
+    await deps.callTool('aitown.do_put_down_item', {
+      worldId: operation.worldId,
+      agentId: args.agent.id,
+      operationId: operation.operationId,
+      slotIndex: putDownSlot,
+    });
+  } else if (action === 'buyItem') {
+    if (!buyItem || !buyIds.includes(buyItem)) {
+      throw new Error(`buyItem action selected unavailable item ${buyItem}`);
+    }
+    const splitAt = buyItem.lastIndexOf('#');
+    await deps.callTool('aitown.do_buy_item', {
+      worldId: operation.worldId,
+      agentId: args.agent.id,
+      operationId: operation.operationId,
+      objectRef: buyItem.slice(0, splitAt),
+      itemId: buyItem.slice(splitAt + 1),
+    });
+  } else if (action === 'sellItem') {
+    if (!sellItem || !sellIds.includes(sellItem)) {
+      throw new Error(`sellItem action selected unavailable slot ${sellItem}`);
+    }
+    const splitAt = sellItem.lastIndexOf('#slot-');
+    await deps.callTool('aitown.do_sell_item', {
+      worldId: operation.worldId,
+      agentId: args.agent.id,
+      operationId: operation.operationId,
+      objectRef: sellItem.slice(0, splitAt),
+      slotIndex: Number(sellItem.slice(splitAt + '#slot-'.length)),
     });
   } else {
     throw new Error(`agentDoSomething: unexpected action ${action}`);
@@ -659,7 +923,7 @@ export async function handleGenerateMessage(operation, snapshot, deps = defaultD
     [
       {
         role: 'system',
-        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Treat currentContext as factual. Answer direct questions directly and follow the other speaker's topic. If asked about nearby objects, answer only from currentContext.surroundings.nearbyAffordances. If asked about people using objects, answer only from currentContext.surroundings.objectUsers. Do not invent map objects, places, people, memories, or prior actions. If currentContext has no matching facts, say so naturally in character. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
+        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Treat currentContext as factual. Answer direct questions directly and follow the other speaker's topic. If asked about nearby objects, answer only from currentContext.surroundings.nearbyAffordances. If asked about people using objects, answer only from currentContext.surroundings.objectUsers. If asked about inventory, money, nearby items, or shop stock, answer only from currentContext.inventory, currentContext.coins, currentContext.surroundings.nearbyGroundItems, currentContext.surroundings.portableObjects, and currentContext.surroundings.commerceOptions. Do not invent map objects, places, people, memories, inventory items, money, shop stock, or prior actions. If currentContext has no matching facts, say so naturally in character. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
       },
       {
         role: 'user',

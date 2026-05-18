@@ -19,6 +19,7 @@ import { DEFAULT_NAME } from '../../convex/constants.ts';
 import Button from './buttons/Button.tsx';
 import GameStateWindow from './GameStateWindow.tsx';
 import TimeOfDayBar from './TimeOfDayBar.tsx';
+import { InventoryHud } from './InventoryHud.tsx';
 
 export const SHOW_DEBUG_UI = !!import.meta.env.VITE_SHOW_DEBUG_UI;
 
@@ -106,6 +107,12 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
       </Stage>
       <Minimap game={game} humanPlayerId={humanPlayer?.id} />
       <TimeOfDayBar currentTime={currentTime} />
+      <InventoryHud
+        engineId={engineId}
+        game={game}
+        humanPlayer={humanPlayer}
+        currentTime={currentTime}
+      />
       <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-col items-start gap-2">
         <PauseMenu />
         <Button

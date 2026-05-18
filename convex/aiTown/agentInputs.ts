@@ -1,6 +1,19 @@
 import { v } from 'convex/values';
 import { agentId, conversationId, parseGameId } from './ids';
-import { Player, activity, startObjectUse, useObjectRequest } from './player';
+import {
+  Player,
+  activity,
+  buyItem,
+  buyItemRequest,
+  pickUpItem,
+  pickUpItemRequest,
+  putDownItem,
+  putDownItemRequest,
+  sellItem,
+  sellItemRequest,
+  startObjectUse,
+  useObjectRequest,
+} from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
 import { inputHandler } from './inputHandler';
@@ -63,6 +76,10 @@ export const agentInputs = {
       invitee: v.optional(v.id('players')),
       activity: v.optional(activity),
       useObject: v.optional(useObjectRequest),
+      pickUpItem: v.optional(pickUpItemRequest),
+      putDownItem: v.optional(putDownItemRequest),
+      buyItem: v.optional(buyItemRequest),
+      sellItem: v.optional(sellItemRequest),
     },
     handler: (game, now, args) => {
       const agentId = parseGameId('agents', args.agentId);
@@ -97,6 +114,18 @@ export const agentInputs = {
       }
       if (args.useObject) {
         startObjectUse(game, now, player, args.useObject);
+      }
+      if (args.pickUpItem) {
+        pickUpItem(game, now, player, args.pickUpItem);
+      }
+      if (args.putDownItem) {
+        putDownItem(game, now, player, args.putDownItem);
+      }
+      if (args.buyItem) {
+        buyItem(game, now, player, args.buyItem);
+      }
+      if (args.sellItem) {
+        sellItem(game, now, player, args.sellItem);
       }
       return null;
     },

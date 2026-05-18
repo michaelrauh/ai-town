@@ -50,12 +50,44 @@ export const pois: Poi[] = [
         affordances: [
           { id: 'inspect-cheese', name: 'Inspect cheese', emoji: '🧀', defaultDurationMs: 90000 },
         ],
+        subObjects: [
+          {
+            id: 'aged-cheese',
+            name: 'Aged cheese',
+            description: 'A small wrapped wedge of Lucky’s best aged cheese.',
+            affordances: [],
+            portable: {
+              itemId: 'aged-cheese',
+              name: 'Aged cheese',
+              description: 'A small wrapped wedge of Lucky’s best aged cheese.',
+              emoji: '🧀',
+              tags: ['food', 'cheese'],
+              sellPrice: 3,
+            },
+          },
+        ],
       },
       {
         id: 'bookshelf',
         name: 'Bookshelf',
         affordances: [
           { id: 'read', name: 'Read science history', emoji: '📖', defaultDurationMs: 120000 },
+        ],
+        subObjects: [
+          {
+            id: 'field-notes',
+            name: 'Field notes',
+            description: 'A pocket-sized bundle of handwritten observations.',
+            affordances: [],
+            portable: {
+              itemId: 'field-notes',
+              name: 'Field notes',
+              description: 'A pocket-sized bundle of handwritten observations.',
+              emoji: '📓',
+              tags: ['book', 'curio'],
+              sellPrice: 5,
+            },
+          },
         ],
       },
       {
@@ -78,6 +110,22 @@ export const pois: Poi[] = [
         affordances: [
           { id: 'tend', name: 'Tend vegetables', emoji: '🥕', defaultDurationMs: 120000 },
           { id: 'weed', name: 'Pull weeds', emoji: '🌱', defaultDurationMs: 90000 },
+        ],
+        subObjects: [
+          {
+            id: 'carrot-bunch',
+            name: 'Carrot bunch',
+            description: 'A tied bunch of fresh carrots from Bob’s garden.',
+            affordances: [],
+            portable: {
+              itemId: 'carrot-bunch',
+              name: 'Carrot bunch',
+              description: 'A tied bunch of fresh carrots from Bob’s garden.',
+              emoji: '🥕',
+              tags: ['food', 'vegetable'],
+              sellPrice: 2,
+            },
+          },
         ],
       },
       {
@@ -134,6 +182,29 @@ export const pois: Poi[] = [
         id: 'counter',
         name: 'Counter',
         affordances: [{ id: 'order', name: 'Order coffee', emoji: '☕', defaultDurationMs: 45000 }],
+        commerce: {
+          buy: [
+            {
+              itemId: 'coffee-cup',
+              name: 'Coffee cup',
+              description: 'A hot cup of coffee from the counter.',
+              emoji: '☕',
+              tags: ['food', 'drink'],
+              price: 4,
+              sellPrice: 1,
+            },
+            {
+              itemId: 'pastry',
+              name: 'Pastry',
+              description: 'A flaky pastry from the display.',
+              emoji: '🥐',
+              tags: ['food'],
+              price: 5,
+              sellPrice: 2,
+            },
+          ],
+          sellTags: ['food', 'drink', 'book', 'curio', 'cheese', 'vegetable'],
+        },
         subObjects: [
           {
             id: 'espresso-machine',

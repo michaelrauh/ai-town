@@ -2,6 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import {
   buildAgentContext,
   dedupeMemories,
+  handleDoSomething,
   handleGenerateMessage,
   nearbyAffordancesForPosition,
 } from './agent-runner.mjs';
@@ -54,6 +55,45 @@ function makeSnapshot({ luckyPosition = { x: 5, y: 8 } } = {}) {
               id: 'bookshelf',
               name: 'Bookshelf',
               affordances: [{ id: 'read', name: 'Read science history', emoji: ':book:' }],
+              subObjects: [
+                {
+                  id: 'field-notes',
+                  name: 'Field notes',
+                  affordances: [],
+                  portable: {
+                    itemId: 'field-notes',
+                    name: 'Field notes',
+                    tags: ['book', 'curio'],
+                    sellPrice: 5,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          id: 'coffee-shop',
+          name: 'Coffee Shop',
+          kind: 'shop',
+          bbox: { x: 12, y: 12, w: 5, h: 5 },
+          description: 'A shop with a counter.',
+          subObjects: [
+            {
+              id: 'counter',
+              name: 'Counter',
+              affordances: [{ id: 'order', name: 'Order coffee', emoji: ':coffee:' }],
+              commerce: {
+                buy: [
+                  {
+                    itemId: 'coffee-cup',
+                    name: 'Coffee cup',
+                    tags: ['food', 'drink'],
+                    price: 4,
+                    sellPrice: 1,
+                  },
+                ],
+                sellTags: ['food', 'drink', 'book', 'curio'],
+              },
             },
           ],
         },
@@ -67,6 +107,12 @@ function makeSnapshot({ luckyPosition = { x: 5, y: 8 } } = {}) {
           facing: { dx: 0, dy: 1 },
           speed: 0,
           lastInput: 0,
+          coins: 20,
+          inventory: [
+            { itemId: 'old-map', name: 'Old map', tags: ['curio'], sellPrice: 3 },
+            null,
+            null,
+          ],
         },
         {
           id: 'p:me',
@@ -86,6 +132,15 @@ function makeSnapshot({ luckyPosition = { x: 5, y: 8 } } = {}) {
         },
       ],
       agents: [{ id: 'a:lucky', playerId: 'p:lucky' }],
+      groundItems: [
+        {
+          id: 'g:1',
+          item: { itemId: 'loose-cookie', name: 'Loose cookie', tags: ['food'], sellPrice: 2 },
+          position: { x: 5, y: 8 },
+          droppedAt: 0,
+        },
+      ],
+      takenPoiItemRefs: [],
       conversations: [
         {
           id: 'c:1',
@@ -194,6 +249,41 @@ describe('MCP agent context helpers', () => {
     ]);
   });
 
+  test('includes inventory, portable objects, ground items, and commerce in context', () => {
+    const homeContext = buildAgentContext(makeSnapshot(), {
+      playerId: 'p:lucky',
+      agentId: 'a:lucky',
+    });
+
+    expect(homeContext.coins).toBe(20);
+    expect(homeContext.inventory[0]).toMatchObject({ itemId: 'old-map', name: 'Old map' });
+    expect(homeContext.surroundings.portableObjects).toEqual([
+      expect.objectContaining({
+        objectRef: 'lucky-cottage/bookshelf/field-notes',
+        item: expect.objectContaining({ name: 'Field notes' }),
+      }),
+    ]);
+    expect(homeContext.surroundings.nearbyGroundItems).toEqual([
+      expect.objectContaining({
+        id: 'g:1',
+        item: expect.objectContaining({ name: 'Loose cookie' }),
+      }),
+    ]);
+
+    const shopContext = buildAgentContext(makeSnapshot({ luckyPosition: { x: 13, y: 13 } }), {
+      playerId: 'p:lucky',
+      agentId: 'a:lucky',
+    });
+
+    expect(shopContext.surroundings.commerceOptions).toEqual([
+      expect.objectContaining({
+        objectRef: 'coffee-shop/counter',
+        buy: [expect.objectContaining({ itemId: 'coffee-cup', price: 4 })],
+        sellTags: expect.arrayContaining(['curio']),
+      }),
+    ]);
+  });
+
   test('dedupes memories from multiple memory searches', () => {
     const memories = dedupeMemories([
       [
@@ -207,6 +297,66 @@ describe('MCP agent context helpers', () => {
     ]);
 
     expect(memories.map((m) => m.id)).toEqual(['m:1', 'm:2', 'm:3']);
+  });
+});
+
+describe('handleDoSomething inventory actions', () => {
+  test('exposes inventory actions and commits pickup through MCP', async () => {
+    const snapshot = makeSnapshot();
+    const toolCalls = [];
+    const operation = {
+      worldId: 'world',
+      operationId: 'o:1',
+      args: {
+        worldId: 'world',
+        player: snapshot.world.players[0],
+        agent: snapshot.world.agents[0],
+        otherFreePlayers: [],
+      },
+    };
+
+    await handleDoSomething(operation, snapshot, {
+      callTool: async (name, args) => {
+        if (name === 'aitown.search_memories') {
+          return textContent([]);
+        }
+        toolCalls.push({ name, args });
+        return textContent({ ok: true });
+      },
+      llmSchema: async (messages, schema) => {
+        expect(schema.properties.action.enum).toEqual(expect.arrayContaining(['pickUpItem']));
+        const payload = JSON.parse(messages[1].content);
+        expect(payload.currentContext.surroundings.portableObjects[0]).toMatchObject({
+          objectRef: 'lucky-cottage/bookshelf/field-notes',
+        });
+        return {
+          action: 'pickUpItem',
+          x: null,
+          y: null,
+          description: null,
+          emoji: null,
+          durationMs: null,
+          invitee: null,
+          useObject: null,
+          pickUpItem: 'poi:lucky-cottage/bookshelf/field-notes',
+          putDownSlot: null,
+          buyItem: null,
+          sellItem: null,
+        };
+      },
+      conversationMessages: async () => [],
+      recentMemories: async () => ({ name: 'Lucky', memories: [] }),
+    });
+
+    expect(toolCalls).toEqual([
+      {
+        name: 'aitown.do_pick_up_item',
+        args: expect.objectContaining({
+          sourceKind: 'poiObject',
+          objectRef: 'lucky-cottage/bookshelf/field-notes',
+        }),
+      },
+    ]);
   });
 });
 

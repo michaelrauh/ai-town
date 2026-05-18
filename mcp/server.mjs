@@ -214,6 +214,74 @@ export function tools() {
       },
     },
     {
+      name: 'aitown.do_pick_up_item',
+      description:
+        'Decide the NPC will pick up a listed portable object or nearby ground item into an empty inventory slot. Atomically commits the agentDoSomething operation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worldId: { type: 'string' },
+          agentId: { type: 'string' },
+          operationId: { type: 'string' },
+          sourceKind: { type: 'string', enum: ['poiObject', 'groundItem'] },
+          objectRef: { type: 'string' },
+          groundItemId: { type: 'string' },
+        },
+        required: ['agentId', 'operationId', 'sourceKind'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.do_put_down_item',
+      description:
+        'Decide the NPC will put down an inventory slot as a visible ground item. Atomically commits the agentDoSomething operation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worldId: { type: 'string' },
+          agentId: { type: 'string' },
+          operationId: { type: 'string' },
+          slotIndex: { type: 'integer', minimum: 0, maximum: 2 },
+        },
+        required: ['agentId', 'operationId', 'slotIndex'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.do_buy_item',
+      description:
+        'Decide the NPC will buy a listed shop-counter item into an empty inventory slot. Atomically commits the agentDoSomething operation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worldId: { type: 'string' },
+          agentId: { type: 'string' },
+          operationId: { type: 'string' },
+          objectRef: { type: 'string' },
+          itemId: { type: 'string' },
+        },
+        required: ['agentId', 'operationId', 'objectRef', 'itemId'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.do_sell_item',
+      description:
+        'Decide the NPC will sell an inventory slot to a listed shop-counter commerce object. Atomically commits the agentDoSomething operation.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          worldId: { type: 'string' },
+          agentId: { type: 'string' },
+          operationId: { type: 'string' },
+          objectRef: { type: 'string' },
+          slotIndex: { type: 'integer', minimum: 0, maximum: 2 },
+        },
+        required: ['agentId', 'operationId', 'objectRef', 'slotIndex'],
+        additionalProperties: false,
+      },
+    },
+    {
       name: 'aitown.handle_invite_accept',
       description:
         'Accept a pending conversation invite for an NPC. Atomically accepts and finishes the agentHandleInvite operation.',
@@ -407,6 +475,47 @@ export async function callTool(name, args) {
         }),
       );
     }
+    case 'aitown.do_pick_up_item': {
+      let source;
+      if (args.sourceKind === 'poiObject') {
+        source = { kind: 'poiObject', objectRef: args.objectRef };
+      } else if (args.sourceKind === 'groundItem') {
+        source = { kind: 'groundItem', groundItemId: args.groundItemId };
+      } else {
+        throw new Error(`Invalid item pickup source kind ${args.sourceKind}`);
+      }
+      return textContent(
+        await sendInput(worldId, 'finishDoSomething', {
+          agentId: args.agentId,
+          operationId: args.operationId,
+          pickUpItem: { source },
+        }),
+      );
+    }
+    case 'aitown.do_put_down_item':
+      return textContent(
+        await sendInput(worldId, 'finishDoSomething', {
+          agentId: args.agentId,
+          operationId: args.operationId,
+          putDownItem: { slotIndex: args.slotIndex },
+        }),
+      );
+    case 'aitown.do_buy_item':
+      return textContent(
+        await sendInput(worldId, 'finishDoSomething', {
+          agentId: args.agentId,
+          operationId: args.operationId,
+          buyItem: { objectRef: args.objectRef, itemId: args.itemId },
+        }),
+      );
+    case 'aitown.do_sell_item':
+      return textContent(
+        await sendInput(worldId, 'finishDoSomething', {
+          agentId: args.agentId,
+          operationId: args.operationId,
+          sellItem: { objectRef: args.objectRef, slotIndex: args.slotIndex },
+        }),
+      );
     case 'aitown.handle_invite_accept':
       await sendInput(worldId, 'acceptInvite', {
         playerId: args.playerId,

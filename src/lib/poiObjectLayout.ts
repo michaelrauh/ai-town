@@ -1,4 +1,10 @@
-import type { ObjectAffordance, Poi, PoiSubObject } from '../../convex/aiTown/worldMap';
+import type {
+  CommerceMetadata,
+  ObjectAffordance,
+  Poi,
+  PoiSubObject,
+  PortableObjectMetadata,
+} from '../../convex/aiTown/worldMap';
 
 export type LaidOutPoiObject = {
   poiId: string;
@@ -8,6 +14,8 @@ export type LaidOutPoiObject = {
   objectName: string;
   description: string | null;
   affordances: ObjectAffordance[];
+  portable: PortableObjectMetadata | null;
+  commerce: CommerceMetadata | null;
   depth: number;
   parentObjectRef: string | null;
   x: number;
@@ -72,6 +80,8 @@ export function layoutPoiObjects(poi: Poi, tileDim: number): LaidOutPoiObject[] 
       objectName: node.object.name,
       description: node.object.description ?? null,
       affordances: node.object.affordances,
+      portable: node.object.portable ?? null,
+      commerce: node.object.commerce ?? null,
       depth: node.depth,
       parentObjectRef: node.parentObjectRef,
       x,

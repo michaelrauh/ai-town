@@ -17,6 +17,8 @@ import { ServerGame } from '../hooks/serverGame.ts';
 import type { StepDirection } from '../../convex/aiTown/player.ts';
 import { locationFields, playerLocation, type Location } from '../../convex/aiTown/location.ts';
 import { useHistoricalValue } from '../hooks/useHistoricalValue.ts';
+import { lightingForTime } from '../lib/dayCycle.ts';
+import { PixiLightingOverlay } from './PixiLightingOverlay.tsx';
 
 function isEditableKeyboardTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
@@ -146,6 +148,8 @@ export const PixiGame = (props: {
   };
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
+  const currentTime = props.historicalTime ?? Date.now();
+  const lighting = lightingForTime(currentTime);
 
   useEffect(() => {
     function clearHeldStepTimer() {
@@ -322,7 +326,7 @@ export const PixiGame = (props: {
         onpointerup={onMapPointerUp}
         onpointerdown={onMapPointerDown}
       />
-      <PixiPois game={props.game} />
+      <PixiPois game={props.game} currentTime={currentTime} />
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.
@@ -341,6 +345,11 @@ export const PixiGame = (props: {
           historicalTime={props.historicalTime}
         />
       ))}
+      <PixiLightingOverlay
+        widthPx={width * tileDim}
+        heightPx={height * tileDim}
+        lighting={lighting}
+      />
     </PixiViewport>
   );
 };

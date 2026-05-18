@@ -12,10 +12,14 @@ import {
   type InspectorAffordance,
   type InspectorContext,
 } from '../lib/inspectorContext';
+import {
+  buildInspectorSearchRecords,
+  searchInspectorRecords,
+  type InspectorSearchResult,
+  type InspectorTab,
+} from '../lib/inspectorSearch';
 
-type Tab = 'characters' | 'perception' | 'memories' | 'world' | 'raw';
-
-const tabs: Array<{ id: Tab; label: string }> = [
+const tabs: Array<{ id: InspectorTab; label: string }> = [
   { id: 'characters', label: 'Characters' },
   { id: 'perception', label: 'Perception' },
   { id: 'memories', label: 'Memories' },
@@ -43,7 +47,8 @@ export default function GameStateWindow({
   const [selectedPlayerId, setSelectedPlayerId] = useState<GameId<'players'> | undefined>(
     initialPlayerId ?? firstPlayerId,
   );
-  const [activeTab, setActiveTab] = useState<Tab>('characters');
+  const [activeTab, setActiveTab] = useState<InspectorTab>('characters');
+  const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
     if (selectedPlayerId && game.world.players.has(selectedPlayerId)) {
@@ -52,20 +57,65 @@ export default function GameStateWindow({
     setSelectedPlayerId(initialPlayerId ?? firstPlayerId);
   }, [firstPlayerId, game.world.players, initialPlayerId, selectedPlayerId]);
 
-  const selectedContext = useMemo(() => {
-    return selectedPlayerId
-      ? buildInspectorContext(game, selectedPlayerId, currentTime)
-      : null;
-  }, [currentTime, game, selectedPlayerId]);
-
-  const activeConversationId = selectedContext?.state.conversation?.id;
-  const conversationMessages = useQuery(
-    api.messages.listMessages,
-    activeConversationId ? { worldId, conversationId: activeConversationId } : 'skip',
+  const contexts = useMemo(
+    () =>
+      players
+        .map((player) => buildInspectorContext(game, player.id, currentTime))
+        .filter((context): context is InspectorContext => !!context),
+    [currentTime, game, players],
   );
-  const memories = useQuery(
-    api.agent.memory.inspectorMemories,
-    selectedPlayerId ? { worldId, playerId: selectedPlayerId, limit: 50 } : 'skip',
+  const selectedContext = useMemo(() => {
+    return contexts.find((context) => context.self.id === selectedPlayerId) ?? null;
+  }, [contexts, selectedPlayerId]);
+
+  const activeConversationIds = useMemo(
+    () => [...game.world.conversations.keys()],
+    [game.world.conversations],
+  );
+  const allMemories = useQuery(api.agent.memory.inspectorAllMemories, {
+    worldId,
+    limitPerPlayer: 50,
+  });
+  const conversationMessageGroups = useQuery(
+    api.messages.inspectorConversationMessages,
+    activeConversationIds.length > 0
+      ? { worldId, conversationIds: activeConversationIds, limitPerConversation: 25 }
+      : 'skip',
+  );
+  const selectedConversationMessages = useMemo(() => {
+    const conversationId = selectedContext?.state.conversation?.id;
+    if (!conversationId) {
+      return [];
+    }
+    return (
+      conversationMessageGroups?.conversations.find(
+        (conversation) => conversation.conversationId === conversationId,
+      )?.messages ?? []
+    );
+  }, [conversationMessageGroups, selectedContext?.state.conversation?.id]);
+  const selectedMemories = useMemo(() => {
+    if (!selectedPlayerId || !allMemories) {
+      return undefined;
+    }
+    const group = allMemories.players.find((player) => player.playerId === selectedPlayerId);
+    return {
+      name: group?.name ?? selectedContext?.self.name ?? null,
+      memories: group?.memories ?? [],
+    };
+  }, [allMemories, selectedContext?.self.name, selectedPlayerId]);
+  const searchRecords = useMemo(
+    () =>
+      buildInspectorSearchRecords({
+        game,
+        contexts,
+        memories: allMemories,
+        conversationMessages: conversationMessageGroups,
+      }),
+    [allMemories, contexts, conversationMessageGroups, game],
+  );
+  const searchResults = useMemo(
+    () => searchInspectorRecords(searchRecords, searchQuery),
+    [searchQuery, searchRecords],
   );
 
   const rawContext = useMemo(() => {
@@ -75,13 +125,20 @@ export default function GameStateWindow({
     return {
       ...selectedContext,
       recentConversationMessages:
-        conversationMessages?.map((message) => ({
+        selectedConversationMessages.map((message) => ({
           authorName: message.authorName,
           text: message.text,
-          createdAt: message._creationTime,
-        })) ?? [],
+          createdAt: message.createdAt,
+        })),
     };
-  }, [conversationMessages, selectedContext]);
+  }, [selectedConversationMessages, selectedContext]);
+
+  const openSearchResult = (result: InspectorSearchResult) => {
+    if (result.playerId) {
+      setSelectedPlayerId(result.playerId);
+    }
+    setActiveTab(result.targetTab);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col text-brown-100">
@@ -107,6 +164,15 @@ export default function GameStateWindow({
         </button>
       </div>
 
+      <div className="mb-3">
+        <input
+          className="w-full border-4 border-brown-900 bg-brown-900/70 px-3 py-2 text-sm text-white placeholder:text-brown-200 focus:border-clay-500 focus:ring-0"
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="Search state"
+        />
+      </div>
+
       <div className="mb-4 flex flex-wrap gap-2">
         {tabs.map((tab) => (
           <button
@@ -126,6 +192,13 @@ export default function GameStateWindow({
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-hidden lg:grid-cols-[16rem_1fr]">
         <div className="min-h-0 overflow-y-auto border-4 border-brown-900 bg-brown-900/30">
+          {searchQuery.trim().length > 0 && (
+            <SearchResults
+              query={searchQuery}
+              results={searchResults}
+              onOpenResult={openSearchResult}
+            />
+          )}
           <div className="bg-brown-700 px-3 py-2 font-display text-2xl text-white">Characters</div>
           <div className="divide-y divide-brown-900">
             {players.map((player) => {
@@ -161,10 +234,10 @@ export default function GameStateWindow({
             <CharactersTab context={selectedContext} />
           )}
           {selectedContext && activeTab === 'perception' && (
-            <PerceptionTab context={selectedContext} messages={conversationMessages ?? []} />
+            <PerceptionTab context={selectedContext} messages={selectedConversationMessages} />
           )}
           {selectedContext && activeTab === 'memories' && (
-            <MemoriesTab memories={memories} />
+            <MemoriesTab memories={selectedMemories} />
           )}
           {selectedContext && activeTab === 'world' && (
             <WorldTab game={game} currentTime={currentTime} />
@@ -228,7 +301,7 @@ function PerceptionTab({
   messages,
 }: {
   context: InspectorContext;
-  messages: Array<{ authorName: string; text: string; _creationTime: number }>;
+  messages: Array<{ authorName: string; text: string; createdAt: number }>;
 }) {
   return (
     <div className="space-y-4">
@@ -248,6 +321,29 @@ function PerceptionTab({
           <div className="divide-y divide-brown-900">
             {context.surroundings.nearbyAffordances.map((affordance) => (
               <AffordanceRow key={affordance.id} affordance={affordance} />
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title="Object Use">
+        {context.surroundings.objectUsers.length === 0 ? (
+          <EmptyState>No visible object use.</EmptyState>
+        ) : (
+          <div className="divide-y divide-brown-900">
+            {context.surroundings.objectUsers.map((user) => (
+              <div key={`${user.playerId}-${user.objectRef}-${user.affordanceId}`} className="py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-white">
+                    {user.playerName}: {user.affordanceName}
+                  </span>
+                  <span className="font-mono text-[11px] text-brown-200">{user.objectRef}</span>
+                </div>
+                <div className="mt-1 text-xs text-brown-200">
+                  {user.objectName} until {timeLabel(user.until)}
+                </div>
+                <div className="mt-1 text-sm leading-snug text-brown-100">{user.description}</div>
+              </div>
             ))}
           </div>
         )}
@@ -291,9 +387,9 @@ function PerceptionTab({
         ) : (
           <div className="space-y-3">
             {messages.slice(-8).map((message) => (
-              <div key={`${message._creationTime}-${message.authorName}`} className="text-sm">
+              <div key={`${message.createdAt}-${message.authorName}`} className="text-sm">
                 <div className="text-brown-200">
-                  {message.authorName} at {timeLabel(message._creationTime)}
+                  {message.authorName} at {timeLabel(message.createdAt)}
                 </div>
                 <div className="text-white">{message.text}</div>
               </div>
@@ -301,6 +397,48 @@ function PerceptionTab({
           </div>
         )}
       </Section>
+    </div>
+  );
+}
+
+function SearchResults({
+  query,
+  results,
+  onOpenResult,
+}: {
+  query: string;
+  results: InspectorSearchResult[];
+  onOpenResult: (result: InspectorSearchResult) => void;
+}) {
+  const groups = groupSearchResults(results);
+  return (
+    <div className="border-b-4 border-brown-900">
+      <div className="bg-clay-700 px-3 py-2 font-display text-2xl text-white">Results</div>
+      {results.length === 0 ? (
+        <div className="px-3 py-3 text-sm text-brown-200">No matches for "{query}".</div>
+      ) : (
+        <div className="max-h-72 overflow-y-auto px-2 py-2">
+          {groups.map(([category, items]) => (
+            <div key={category} className="mb-3 last:mb-0">
+              <div className="px-1 text-xs uppercase text-brown-200">{category}</div>
+              <div className="mt-1 space-y-1">
+                {items.map((result) => (
+                  <button
+                    key={result.id}
+                    className="block w-full border border-brown-900 bg-brown-900/30 px-2 py-2 text-left hover:bg-brown-700"
+                    onClick={() => onOpenResult(result)}
+                  >
+                    <div className="truncate text-sm text-white">{result.title}</div>
+                    <div className="mt-1 max-h-10 overflow-hidden text-xs leading-snug text-brown-200">
+                      {result.excerpt || result.targetTab}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -527,4 +665,14 @@ function timeLabel(timestamp: number) {
 
 function shortId(id: string) {
   return id.length > 10 ? id.slice(0, 10) : id;
+}
+
+function groupSearchResults(results: InspectorSearchResult[]) {
+  const groups = new Map<string, InspectorSearchResult[]>();
+  for (const result of results) {
+    const existing = groups.get(result.category) ?? [];
+    existing.push(result);
+    groups.set(result.category, existing);
+  }
+  return [...groups.entries()];
 }

@@ -410,6 +410,39 @@ export const inspectorMemories = query({
   },
 });
 
+export const inspectorAllMemories = query({
+  args: { worldId: v.id('worlds'), limitPerPlayer: v.optional(v.number()) },
+  handler: async (ctx, args) => {
+    const world = await ctx.db.get(args.worldId);
+    if (!world) {
+      throw new Error(`World ${args.worldId} not found`);
+    }
+    const playerDescriptions = await ctx.db
+      .query('playerDescriptions')
+      .withIndex('worldId', (q) => q.eq('worldId', args.worldId))
+      .collect();
+    const names = new Map(playerDescriptions.map((description) => [
+      description.playerId,
+      description.name,
+    ]));
+    const limit = normalizeInspectorMemoryLimit(args.limitPerPlayer);
+    const players = [];
+    for (const player of world.players) {
+      const memories = await ctx.db
+        .query('memories')
+        .withIndex('playerId', (q) => q.eq('playerId', player.id))
+        .order('desc')
+        .take(limit);
+      players.push({
+        playerId: player.id,
+        name: names.get(player.id) ?? null,
+        memories: memories.map(inspectorMemoryPayload),
+      });
+    }
+    return { players };
+  },
+});
+
 export const mcpSaveReflections = action({
   args: {
     worldId: v.id('worlds'),

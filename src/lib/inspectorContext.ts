@@ -24,6 +24,17 @@ export type InspectorAffordance = {
   defaultDurationMs: number | null;
 };
 
+export type InspectorObjectUser = {
+  playerId: GameId<'players'>;
+  playerName: string;
+  objectRef: string;
+  objectName: string;
+  affordanceId: string;
+  affordanceName: string;
+  description: string;
+  until: number;
+};
+
 export type InspectorContext = {
   self: {
     id: GameId<'players'>;
@@ -72,6 +83,7 @@ export type InspectorContext = {
       activity: string | null;
       objectUse: string | null;
     }>;
+    objectUsers: InspectorObjectUser[];
     mapBounds: { width: number; height: number };
   };
   state: {
@@ -185,6 +197,7 @@ export function buildInspectorContext(
     surroundings: {
       nearbyAffordances: currentPoi ? flattenPoiAffordances(currentPoi) : [],
       nearbyPlayers: nearbyPlayers(game, player, currentPoi, currentTime),
+      objectUsers: objectUsers(game, player, currentPoi, currentTime),
       mapBounds: { width: game.worldMap.width, height: game.worldMap.height },
     },
     state: {
@@ -303,6 +316,37 @@ function nearbyPlayers(
         objectUse: activeObjectUse?.description ?? null,
       };
     });
+}
+
+function objectUsers(
+  game: ServerGame,
+  player: Player,
+  currentPoi: Poi | null,
+  currentTime: number,
+): InspectorObjectUser[] {
+  return [...game.world.players.values()]
+    .filter((candidate) => isActive(candidate.objectUse, currentTime))
+    .map((candidate) => ({
+      player: candidate,
+      candidatePoi: currentPoiForPosition(game.worldMap.pois, candidate.position),
+      distance: pointDistance(player.position, candidate.position),
+      objectUse: candidate.objectUse!,
+    }))
+    .filter(({ candidatePoi, distance }) => {
+      return (
+        distance <= INSPECTOR_NEARBY_RADIUS || (!!currentPoi && candidatePoi?.id === currentPoi.id)
+      );
+    })
+    .map(({ player: candidate, objectUse }) => ({
+      playerId: candidate.id,
+      playerName: game.playerDescriptions.get(candidate.id)?.name ?? candidate.id,
+      objectRef: objectUse.objectRef,
+      objectName: objectUse.objectName,
+      affordanceId: objectUse.affordanceId,
+      affordanceName: objectUse.affordanceName,
+      description: objectUse.description,
+      until: objectUse.until,
+    }));
 }
 
 function isActive<T extends { until: number }>(item: T | undefined, currentTime: number): item is T {

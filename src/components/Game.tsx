@@ -18,6 +18,7 @@ import { toast } from 'react-toastify';
 import { DEFAULT_NAME } from '../../convex/constants.ts';
 import Button from './buttons/Button.tsx';
 import GameStateWindow from './GameStateWindow.tsx';
+import TimeOfDayBar from './TimeOfDayBar.tsx';
 
 export const SHOW_DEBUG_UI = !!import.meta.env.VITE_SHOW_DEBUG_UI;
 
@@ -84,6 +85,7 @@ export default function Game() {
   if (!worldId || !engineId || !game) {
     return null;
   }
+  const currentTime = historicalTime ?? worldState?.engine.currentTime ?? Date.now();
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-black" ref={gameWrapperRef}>
       {SHOW_DEBUG_UI && <DebugTimeManager timeManager={timeManager} width={200} height={100} />}
@@ -103,6 +105,7 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
         </ConvexProvider>
       </Stage>
       <Minimap game={game} humanPlayerId={humanPlayer?.id} />
+      <TimeOfDayBar currentTime={currentTime} />
       <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex flex-col items-start gap-2">
         <PauseMenu />
         <Button
@@ -123,7 +126,7 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
               worldId={worldId}
               engineId={engineId}
               game={game}
-              currentTime={historicalTime ?? worldState?.engine.currentTime ?? Date.now()}
+              currentTime={currentTime}
               initialPlayerId={selectedElement?.id ?? humanPlayer?.id}
               onClose={() => setShowStateWindow(false)}
             />

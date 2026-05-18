@@ -288,6 +288,33 @@ function nearbyPlayers(snapshot, player, currentPoi, now) {
     });
 }
 
+function objectUsers(snapshot, player, currentPoi, now) {
+  const players = snapshot.world.players ?? [];
+  return players
+    .filter((other) => activeUntil(other.objectUse, now))
+    .filter((other) => {
+      if (currentPoi && inBbox(other.position, currentPoi.bbox)) {
+        return true;
+      }
+      return distance(player.position, other.position) <= NEARBY_PLAYER_DISTANCE_TILES;
+    })
+    .map((other) => {
+      const desc = playerDescription(snapshot, other.id);
+      const use = other.objectUse;
+      return {
+        playerId: other.id,
+        playerName: desc?.name ?? other.id,
+        position: other.position,
+        objectRef: use.objectRef,
+        objectName: use.objectName,
+        affordanceId: use.affordanceId,
+        affordanceName: use.affordanceName,
+        description: use.description,
+        until: use.until,
+      };
+    });
+}
+
 function compactPoi(poi) {
   if (!poi) {
     return null;
@@ -355,6 +382,7 @@ export function buildAgentContext(snapshot, args, extras = {}) {
     surroundings: {
       nearbyAffordances,
       nearbyPlayers: nearbyPlayers(snapshot, player, currentPoi, now),
+      objectUsers: objectUsers(snapshot, player, currentPoi, now),
       map: {
         width: snapshot.worldMap.width,
         height: snapshot.worldMap.height,
@@ -455,7 +483,7 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, or useObject. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. Use your character facts, schedule, surroundings, memories, and current state to make a choice in character. Prefer place-appropriate object affordances when they match the scheduled activity.',
+          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, or useObject. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, memories, and current state to make a choice in character. Prefer place-appropriate object affordances when they match the scheduled activity.',
       },
       {
         role: 'user',
@@ -631,7 +659,7 @@ export async function handleGenerateMessage(operation, snapshot, deps = defaultD
     [
       {
         role: 'system',
-        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Treat currentContext as factual. Answer direct questions directly and follow the other speaker's topic. If asked about nearby objects, answer only from currentContext.surroundings.nearbyAffordances. Do not invent map objects, places, people, memories, or prior actions. If currentContext has no matching facts, say so naturally in character. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
+        content: `You are roleplaying an NPC in AI Town. Write exactly one short in-character chat line (under 280 characters) to ${verb}. Treat currentContext as factual. Answer direct questions directly and follow the other speaker's topic. If asked about nearby objects, answer only from currentContext.surroundings.nearbyAffordances. If asked about people using objects, answer only from currentContext.surroundings.objectUsers. Do not invent map objects, places, people, memories, or prior actions. If currentContext has no matching facts, say so naturally in character. Do not force your profession, goal, belief, scheme, science, hobby, family, or other core trait into every reply; bring those up only when relevant or asked. No narration, no markdown. Return JSON with a single field "text".`,
       },
       {
         role: 'user',

@@ -75,6 +75,14 @@ function makeSnapshot({ luckyPosition = { x: 5, y: 8 } } = {}) {
           facing: { dx: -1, dy: 0 },
           speed: 0,
           lastInput: 0,
+          objectUse: {
+            objectRef: 'lucky-cottage/kitchen/stove/burner',
+            objectName: 'Burner',
+            affordanceId: 'brew-coffee',
+            affordanceName: 'Brew coffee',
+            description: 'Brewing coffee',
+            until: 120_000,
+          },
         },
       ],
       agents: [{ id: 'a:lucky', playerId: 'p:lucky' }],
@@ -166,6 +174,26 @@ describe('MCP agent context helpers', () => {
     expect(context.surroundings.nearbyAffordances).toEqual([]);
   });
 
+  test('includes nearby object users in context', () => {
+    const snapshot = makeSnapshot();
+
+    const context = buildAgentContext(snapshot, {
+      playerId: 'p:lucky',
+      agentId: 'a:lucky',
+    });
+
+    expect(context.surroundings.objectUsers).toEqual([
+      expect.objectContaining({
+        playerId: 'p:me',
+        playerName: 'Me',
+        objectRef: 'lucky-cottage/kitchen/stove/burner',
+        objectName: 'Burner',
+        affordanceId: 'brew-coffee',
+        affordanceName: 'Brew coffee',
+      }),
+    ]);
+  });
+
   test('dedupes memories from multiple memory searches', () => {
     const memories = dedupeMemories([
       [
@@ -228,6 +256,13 @@ describe('handleGenerateMessage context payload', () => {
           (a) => a.objectName,
         );
         expect(objectNames).toEqual(expect.arrayContaining(['Kitchen', 'Burner', 'Bookshelf']));
+        expect(payload.currentContext.surroundings.objectUsers).toEqual([
+          expect.objectContaining({
+            playerName: 'Me',
+            objectName: 'Burner',
+            affordanceName: 'Brew coffee',
+          }),
+        ]);
         return { text: `I can see ${objectNames.join(', ')} nearby.` };
       },
       recentMemories: async () => ({ name: 'Lucky', memories: [] }),

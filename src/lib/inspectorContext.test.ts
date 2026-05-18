@@ -184,6 +184,59 @@ describe('inspector context helpers', () => {
     expect(context?.surroundings.nearbyPlayers.map((p) => p.name)).toEqual(['Alice']);
   });
 
+  test('includes active object users in the same POI', () => {
+    const game = makeServerGame({
+      players: [
+        player('p:1', { x: 1, y: 1 }),
+        player('p:2', { x: 9, y: 9 }, {
+          objectUse: {
+            objectRef: 'cafe/kitchen/stove/burner',
+            objectName: 'Burner',
+            affordanceId: 'ignite',
+            affordanceName: 'Ignite',
+            description: 'Igniting the burner',
+            until: 5000,
+          },
+        }),
+      ],
+    });
+
+    const context = buildInspectorContext(game, 'p:1' as any, 1000);
+
+    expect(context?.surroundings.objectUsers).toEqual([
+      expect.objectContaining({
+        playerId: 'p:2',
+        playerName: 'Alice',
+        objectRef: 'cafe/kitchen/stove/burner',
+        objectName: 'Burner',
+        affordanceId: 'ignite',
+        affordanceName: 'Ignite',
+      }),
+    ]);
+  });
+
+  test('excludes expired object users', () => {
+    const game = makeServerGame({
+      players: [
+        player('p:1', { x: 1, y: 1 }),
+        player('p:2', { x: 2, y: 2 }, {
+          objectUse: {
+            objectRef: 'cafe/kitchen/stove/burner',
+            objectName: 'Burner',
+            affordanceId: 'ignite',
+            affordanceName: 'Ignite',
+            description: 'Igniting the burner',
+            until: 500,
+          },
+        }),
+      ],
+    });
+
+    const context = buildInspectorContext(game, 'p:1' as any, 1000);
+
+    expect(context?.surroundings.objectUsers).toEqual([]);
+  });
+
   test('includes schedule and active player state', () => {
     const game = makeServerGame({
       players: [

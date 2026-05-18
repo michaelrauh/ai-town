@@ -270,6 +270,20 @@ function CharactersTab({ context }: { context: InspectorContext }) {
         <Field label="At scheduled POI" value={context.schedule.atScheduledPoi ? 'yes' : 'no'} />
       </Section>
 
+      <Section title="Goal">
+        <Field label="Current goal" value={context.currentGoal.description} />
+        <Field label="Kind" value={context.currentGoal.kind} />
+        <Field label="Source" value={context.currentGoal.source} />
+        <LongText label="Rationale" value={context.currentGoal.rationale} />
+        <Field label="Target" value={goalTargetLabel(context.currentGoal.target)} />
+        <Field label="Expires" value={timeLabel(context.currentGoal.expiresAt)} />
+        <Field
+          label="Schedule conflict"
+          value={context.goalStatus.scheduleConflict ? 'yes' : 'no'}
+        />
+        <Field label="Movement reason" value={context.goalStatus.movementReason} />
+      </Section>
+
       <Section title="State">
         <Field label="Coins" value={context.coins} />
         <LongText
@@ -280,7 +294,7 @@ function CharactersTab({ context }: { context: InspectorContext }) {
         />
         <Field label="Activity" value={context.state.activity?.description ?? null} />
         <Field label="Object use" value={context.state.objectUse?.description ?? null} />
-        <Field label="Pathfinding" value={pathfindingLabel(context.state.pathfinding)} />
+        <Field label="Pathfinding" value={pathfindingLabel(context)} />
         <Field label="Conversation" value={conversationLabel(context)} />
         <Field label="Agent operation" value={context.state.agentOperation?.name ?? null} />
       </Section>
@@ -707,11 +721,24 @@ function ObjectTree({ objects, depth = 0 }: { objects: PoiSubObject[]; depth?: n
   );
 }
 
-function pathfindingLabel(pathfinding: InspectorContext['state']['pathfinding']) {
+function goalTargetLabel(target: InspectorContext['currentGoal']['target']) {
+  if (!target) {
+    return null;
+  }
+  return Object.entries(target)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(', ');
+}
+
+function pathfindingLabel(context: InspectorContext) {
+  const pathfinding = context.state.pathfinding;
   if (!pathfinding) {
     return null;
   }
-  return `${pathfinding.state.kind} to ${positionLabel(pathfinding.destination)}`;
+  const reason = context.goalStatus.movementReason
+    ? ` for ${context.goalStatus.movementReason}`
+    : '';
+  return `${pathfinding.state.kind} to ${positionLabel(pathfinding.destination)}${reason}`;
 }
 
 function conversationLabel(context: InspectorContext) {

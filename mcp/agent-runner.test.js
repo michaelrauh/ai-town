@@ -3,6 +3,7 @@ import {
   buildAgentContext,
   dedupeMemories,
   handleDoSomething,
+  handleReflect,
   handleGenerateMessage,
   nearbyAffordancesForPosition,
 } from './agent-runner.mjs';
@@ -18,7 +19,7 @@ function textContent(value) {
   };
 }
 
-function makeSnapshot({ luckyPosition = { x: 5, y: 8 } } = {}) {
+function makeSnapshot({ luckyPosition = { x: 5, y: 8 }, luckyAgent = {} } = {}) {
   return {
     engine: { currentTime: 60_000 },
     worldMap: {
@@ -131,7 +132,7 @@ function makeSnapshot({ luckyPosition = { x: 5, y: 8 } } = {}) {
           },
         },
       ],
-      agents: [{ id: 'a:lucky', playerId: 'p:lucky' }],
+      agents: [{ id: 'a:lucky', playerId: 'p:lucky', ...luckyAgent }],
       groundItems: [
         {
           id: 'g:1',
@@ -284,6 +285,39 @@ describe('MCP agent context helpers', () => {
     ]);
   });
 
+  test('includes explicit and derived goals in context', () => {
+    const derivedContext = buildAgentContext(makeSnapshot(), {
+      playerId: 'p:lucky',
+      agentId: 'a:lucky',
+    });
+
+    expect(derivedContext.explicitIntent).toBeNull();
+    expect(derivedContext.currentGoal).toMatchObject({
+      kind: 'followSchedule',
+      source: 'schedule',
+      target: { poiId: 'lucky-cottage', activityDescription: 'brew coffee at home' },
+    });
+
+    const explicitIntent = {
+      kind: 'talkToPlayer',
+      description: 'Tell Me about the burner',
+      rationale: 'Me asked for help.',
+      source: 'reflection',
+      created: 0,
+      expiresAt: 120_000,
+      priority: 7,
+      target: { playerId: 'p:me' },
+    };
+    const explicitContext = buildAgentContext(makeSnapshot({ luckyAgent: { intent: explicitIntent } }), {
+      playerId: 'p:lucky',
+      agentId: 'a:lucky',
+    });
+
+    expect(explicitContext.explicitIntent).toEqual(explicitIntent);
+    expect(explicitContext.currentGoal).toEqual(explicitIntent);
+    expect(explicitContext.goalStatus.hasExplicitIntent).toBe(true);
+  });
+
   test('dedupes memories from multiple memory searches', () => {
     const memories = dedupeMemories([
       [
@@ -354,6 +388,102 @@ describe('handleDoSomething inventory actions', () => {
         args: expect.objectContaining({
           sourceKind: 'poiObject',
           objectRef: 'lucky-cottage/bookshelf/field-notes',
+        }),
+      },
+    ]);
+  });
+});
+
+describe('handleReflect intent setting', () => {
+  test('saves reflections and commits a structured nextIntent', async () => {
+    const snapshot = makeSnapshot();
+    const operation = {
+      worldId: 'world',
+      operationId: 'o:reflect',
+      args: {
+        worldId: 'world',
+        playerId: 'p:lucky',
+        agentId: 'a:lucky',
+      },
+    };
+    const toolCalls = [];
+
+    await handleReflect(operation, snapshot, {
+      recentMemories: async () => ({
+        name: 'Lucky',
+        memories: [
+          {
+            id: 'm:sick',
+            description: 'Me said, "I am sick."',
+            type: 'conversation',
+          },
+        ],
+      }),
+      callTool: async (name, args) => {
+        toolCalls.push({ name, args });
+        return textContent({ ok: true });
+      },
+      llmSchema: async (messages, schema) => {
+        expect(schema.properties.nextIntent.anyOf[0].properties.kind.enum).toEqual(
+          expect.arrayContaining(['stayAtPoi', 'talkToPlayer', 'activity']),
+        );
+        const payload = JSON.parse(messages[1].content);
+        expect(payload.currentContext.currentGoal.kind).toBe('followSchedule');
+        expect(payload.statements[0].text).toContain('I am sick');
+        return {
+          reflections: [
+            {
+              insight: 'Me may need care after saying they are sick.',
+              statementIds: [0],
+              importance: 7,
+            },
+          ],
+          nextIntent: {
+            kind: 'stayAtPoi',
+            description: 'Stay home to avoid spreading illness',
+            rationale: 'Me said they are sick, so keeping distance is prudent.',
+            source: 'conversation',
+            durationMs: 600_000,
+            priority: 8,
+            target: {
+              playerId: null,
+              poiId: 'lucky-cottage',
+              objectRef: null,
+              affordanceId: null,
+              itemId: null,
+              slotIndex: null,
+              activityDescription: 'Stay home and keep distance',
+            },
+          },
+        };
+      },
+      conversationMessages: async () => [],
+    });
+
+    expect(toolCalls).toEqual([
+      {
+        name: 'aitown.save_reflections',
+        args: expect.objectContaining({
+          reflections: [
+            {
+              description: 'Me may need care after saying they are sick.',
+              importance: 7,
+              relatedMemoryIds: ['m:sick'],
+            },
+          ],
+          nextIntent: {
+            kind: 'stayAtPoi',
+            description: 'Stay home to avoid spreading illness',
+            rationale: 'Me said they are sick, so keeping distance is prudent.',
+            source: 'conversation',
+            created: 60_000,
+            expiresAt: 660_000,
+            priority: 8,
+            target: {
+              poiId: 'lucky-cottage',
+              activityDescription: 'Stay home and keep distance',
+            },
+          },
         }),
       },
     ]);

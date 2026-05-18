@@ -25,6 +25,21 @@ const MAX_CONTEXT_MEMORIES = 8;
 const INVENTORY_SLOT_COUNT = 3;
 const STARTING_COINS = 20;
 const GROUND_ITEM_PICKUP_RADIUS = 1.5;
+const INTENT_KINDS = [
+  'followSchedule',
+  'goToPoi',
+  'stayAtPoi',
+  'talkToPlayer',
+  'avoidPlayer',
+  'useObject',
+  'buyItem',
+  'sellItem',
+  'pickUpItem',
+  'putDownItem',
+  'activity',
+];
+const REFLECTION_INTENT_KINDS = INTENT_KINDS.filter((kind) => kind !== 'followSchedule');
+const REFLECTION_INTENT_SOURCES = ['reflection', 'conversation'];
 
 const WIPE_RACE_PATTERNS = [
   'mcp agent operation',
@@ -158,6 +173,16 @@ function gameTimeOfDay(now) {
     Math.floor(fractionOfDay * SCHEDULE_BLOCKS.length),
   );
   return SCHEDULE_BLOCKS[idx];
+}
+
+function scheduleBlockEnd(now) {
+  const blockDuration = GAME_DAY_MS / SCHEDULE_BLOCKS.length;
+  const dayOffset = ((now % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS;
+  return now + (blockDuration - (dayOffset % blockDuration));
+}
+
+function activeExplicitIntent(intent, now) {
+  return intent && intent.expiresAt > now ? intent : null;
 }
 
 function inBbox(position, bbox) {
@@ -436,6 +461,57 @@ function normalizeMessages(messages) {
   }));
 }
 
+function followScheduleGoal(now, block, scheduled, scheduledPoi, atScheduledPoi) {
+  const place = scheduledPoi?.name ?? scheduled?.poi ?? null;
+  const description =
+    scheduled?.activity && place
+      ? `Follow schedule: ${scheduled.activity} at ${place}`
+      : scheduled?.activity
+        ? `Follow schedule: ${scheduled.activity}`
+        : place
+          ? `Follow schedule at ${place}`
+          : `Follow schedule for ${block}`;
+  const target = {};
+  if (scheduled?.poi) {
+    target.poiId = scheduled.poi;
+  }
+  if (scheduled?.activity) {
+    target.activityDescription = scheduled.activity;
+  }
+  return {
+    kind: 'followSchedule',
+    description,
+    rationale: atScheduledPoi
+      ? `The current schedule block is ${block}, and this character is at the scheduled place.`
+      : `The current schedule block is ${block}.`,
+    source: 'schedule',
+    created: now,
+    expiresAt: scheduleBlockEnd(now),
+    priority: 0,
+    target: Object.keys(target).length > 0 ? target : null,
+  };
+}
+
+function currentGoalForContext(agent, now, block, scheduled, scheduledPoi, atScheduledPoi) {
+  const explicitIntent = activeExplicitIntent(agent?.intent, now);
+  return explicitIntent ?? followScheduleGoal(now, block, scheduled, scheduledPoi, atScheduledPoi);
+}
+
+function goalStatusForContext(agent, currentGoal, scheduled, currentPoi, player, now) {
+  const explicitIntent = activeExplicitIntent(agent?.intent, now);
+  const targetPoiId = explicitIntent?.target?.poiId ?? null;
+  const scheduleConflict =
+    !!explicitIntent &&
+    !!scheduled?.poi &&
+    (targetPoiId ? targetPoiId !== scheduled.poi : currentPoi?.id !== scheduled.poi);
+  return {
+    hasExplicitIntent: !!explicitIntent,
+    expiredExplicitIntent: !!agent?.intent && !explicitIntent,
+    scheduleConflict,
+    movementReason: player.pathfinding?.destination ? currentGoal.description : null,
+  };
+}
+
 export function dedupeMemories(memoryLists, max = MAX_CONTEXT_MEMORIES) {
   const seen = new Set();
   const result = [];
@@ -470,6 +546,17 @@ export function buildAgentContext(snapshot, args, extras = {}) {
   const nearbyAffordances = nearbyAffordancesForPosition(snapshot.worldMap, player.position);
   const inventory = normalizeInventory(player.inventory);
   const coins = normalizeCoins(player.coins);
+  const atScheduledPoi =
+    args.atScheduledPoi ?? !!(scheduledPoi && inBbox(player.position, scheduledPoi.bbox));
+  const explicitIntent = activeExplicitIntent(agent?.intent, now);
+  const currentGoal = currentGoalForContext(
+    agent,
+    now,
+    block,
+    scheduled,
+    scheduledPoi,
+    atScheduledPoi,
+  );
   return {
     self,
     currentTime: now,
@@ -477,12 +564,14 @@ export function buildAgentContext(snapshot, args, extras = {}) {
     inventory,
     coins,
     currentPoi: compactPoi(currentPoi),
+    explicitIntent,
+    currentGoal,
+    goalStatus: goalStatusForContext(agent, currentGoal, scheduled, currentPoi, player, now),
     schedule: {
       currentBlock: block,
       scheduledActivity: args.scheduledActivity ?? scheduled?.activity ?? null,
       scheduledPoi: args.scheduledPoi ?? scheduled?.poi ?? null,
-      atScheduledPoi:
-        args.atScheduledPoi ?? !!(scheduledPoi && inBbox(player.position, scheduledPoi.bbox)),
+      atScheduledPoi,
     },
     surroundings: {
       nearbyAffordances,
@@ -677,7 +766,7 @@ export async function handleDoSomething(operation, snapshot, deps = defaultDeps(
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, useObject, pickUpItem, putDownItem, buyItem, or sellItem. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. For pickUpItem, buyItem, sellItem, and putDownItem, choose only an id or slot listed in the schema and currentContext; do not invent items, money, shop stock, or inventory slots. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, inventory, coins, memories, and current state to make a choice in character.',
+          'You are roleplaying an NPC in AI Town. Pick exactly one action — wander, activity, invite, useObject, pickUpItem, putDownItem, buyItem, or sellItem. Fill the fields for the chosen action and set the others to null. Treat currentContext as factual. Prioritize currentContext.currentGoal, especially explicit reflection or conversation goals, unless the available actions cannot satisfy it yet. For wander, x and y must be integer tile coordinates inside the map bounds. For activity, durationMs is 5000-600000. For useObject, choose one listed currentContext.surroundings.nearbyAffordances id and optionally set durationMs. For pickUpItem, buyItem, sellItem, and putDownItem, choose only an id or slot listed in the schema and currentContext; do not invent items, money, shop stock, or inventory slots. Use currentContext.surroundings.objectUsers as factual present-tense perception of who is using nearby objects. Use your character facts, schedule, surroundings, inventory, coins, memories, goals, and current state to make a choice in character.',
       },
       {
         role: 'user',
@@ -956,22 +1045,63 @@ export async function handleGenerateMessage(operation, snapshot, deps = defaultD
   });
 }
 
-export async function handleReflect(operation, snapshot, deps = defaultDeps()) {
-  const args = operation.args;
-  const { name, memories } = await deps.recentMemories(args.worldId, args.playerId);
-  const currentContext = snapshot ? buildAgentContext(snapshot, args) : null;
-  if (!memories || memories.length === 0) {
-    // Nothing to reflect on yet; just finish the op.
-    await deps.callTool('aitown.save_reflections', {
-      worldId: args.worldId,
-      agentId: args.agentId,
-      playerId: args.playerId,
-      operationId: operation.operationId,
-      reflections: [],
-    });
-    return;
-  }
-  const schema = {
+function nullableEnum(values) {
+  const unique = [...new Set(values.filter(Boolean))];
+  return unique.length > 0
+    ? { anyOf: [{ type: 'string', enum: unique }, { type: 'null' }] }
+    : { type: 'null' };
+}
+
+function nullableIntegerEnum(values) {
+  const unique = [...new Set(values.filter(Number.isInteger))];
+  return unique.length > 0
+    ? { anyOf: [{ type: 'integer', enum: unique }, { type: 'null' }] }
+    : { type: 'null' };
+}
+
+function allAffordances(snapshot) {
+  return (snapshot.worldMap?.pois ?? []).flatMap((poi) => collectAffordances(poi, poi.subObjects));
+}
+
+function reflectionIntentSchema(snapshot, currentContext) {
+  const affordances = allAffordances(snapshot);
+  const commerceOptions = (snapshot.worldMap?.pois ?? []).flatMap((poi) =>
+    collectCommerceOptions(poi, poi.subObjects),
+  );
+  const objectRefs = [
+    ...affordances.map((item) => item.objectRef),
+    ...currentContext.surroundings.portableObjects.map((item) => item.objectRef),
+    ...commerceOptions.map((item) => item.objectRef),
+  ];
+  const itemIds = [
+    ...currentContext.inventory.filter(Boolean).map((item) => item.itemId),
+    ...currentContext.surroundings.nearbyGroundItems.map((item) => item.item.itemId),
+    ...currentContext.surroundings.portableObjects.map((item) => item.item.itemId),
+    ...commerceOptions.flatMap((item) => item.buy.map((buy) => buy.itemId)),
+  ];
+  const targetSchema = {
+    type: 'object',
+    properties: {
+      playerId: nullableEnum(snapshot.world.players.map((player) => player.id)),
+      poiId: nullableEnum((snapshot.worldMap?.pois ?? []).map((poi) => poi.id)),
+      objectRef: nullableEnum(objectRefs),
+      affordanceId: nullableEnum(affordances.map((item) => item.affordanceId)),
+      itemId: nullableEnum(itemIds),
+      slotIndex: nullableIntegerEnum(currentContext.inventory.map((_, index) => index)),
+      activityDescription: { type: ['string', 'null'] },
+    },
+    required: [
+      'playerId',
+      'poiId',
+      'objectRef',
+      'affordanceId',
+      'itemId',
+      'slotIndex',
+      'activityDescription',
+    ],
+    additionalProperties: false,
+  };
+  return {
     type: 'object',
     properties: {
       reflections: {
@@ -987,16 +1117,84 @@ export async function handleReflect(operation, snapshot, deps = defaultDeps()) {
           additionalProperties: false,
         },
       },
+      nextIntent: {
+        anyOf: [
+          {
+            type: 'object',
+            properties: {
+              kind: { type: 'string', enum: REFLECTION_INTENT_KINDS },
+              description: { type: 'string' },
+              rationale: { type: 'string' },
+              source: { type: 'string', enum: REFLECTION_INTENT_SOURCES },
+              durationMs: { type: 'integer', minimum: 60_000, maximum: 3_600_000 },
+              priority: { type: 'integer', minimum: 1, maximum: 10 },
+              target: { anyOf: [targetSchema, { type: 'null' }] },
+            },
+            required: [
+              'kind',
+              'description',
+              'rationale',
+              'source',
+              'durationMs',
+              'priority',
+              'target',
+            ],
+            additionalProperties: false,
+          },
+          { type: 'null' },
+        ],
+      },
     },
-    required: ['reflections'],
+    required: ['reflections', 'nextIntent'],
     additionalProperties: false,
   };
+}
+
+function normalizeNextIntent(nextIntent, now) {
+  if (!nextIntent) {
+    return null;
+  }
+  const target = {};
+  for (const [key, value] of Object.entries(nextIntent.target ?? {})) {
+    if (value !== null && value !== undefined && value !== '') {
+      target[key] = value;
+    }
+  }
+  return {
+    kind: nextIntent.kind,
+    description: nextIntent.description,
+    rationale: nextIntent.rationale,
+    source: nextIntent.source,
+    created: now,
+    expiresAt: now + nextIntent.durationMs,
+    priority: nextIntent.priority,
+    target: Object.keys(target).length > 0 ? target : undefined,
+  };
+}
+
+export async function handleReflect(operation, snapshot, deps = defaultDeps()) {
+  const args = operation.args;
+  const { name, memories } = await deps.recentMemories(args.worldId, args.playerId);
+  const currentContext = snapshot ? buildAgentContext(snapshot, args) : null;
+  if (!memories || memories.length === 0) {
+    // Nothing to reflect on yet; just finish the op.
+    await deps.callTool('aitown.save_reflections', {
+      worldId: args.worldId,
+      agentId: args.agentId,
+      playerId: args.playerId,
+      operationId: operation.operationId,
+      reflections: [],
+      nextIntent: null,
+    });
+    return;
+  }
+  const schema = reflectionIntentSchema(snapshot, currentContext);
   const result = await deps.llmSchema(
     [
       {
         role: 'system',
         content:
-          'You are roleplaying an NPC who just finished a conversation. Treat currentContext as factual when present. Look at recent statements and produce up to 3 high-level insights about yourself, others, or the town. Each insight cites the statementIds it draws from. Importance is 1 (trivial) to 10 (life-changing).',
+          'You are roleplaying an NPC who just finished a conversation. Treat currentContext as factual. Look at recent statements and produce up to 3 high-level insights about yourself, others, or the town. Each insight cites the statementIds it draws from. Importance is 1 (trivial) to 10 (life-changing). Also decide whether the conversation implies one concrete nextIntent: actionable information, a request, a risk, or a social obligation should usually become a goal. Examples: if someone says "I am sick", a plausible nextIntent could be stayAtPoi, avoidPlayer, talkToPlayer to notify a friend, or activity such as making soup, depending on your character and currentContext. Use only playerId, poiId, objectRef, affordanceId, itemId, and slotIndex values allowed by currentContext/schema. Do not invent players, POIs, objects, inventory items, shop stock, or money. Use nextIntent null when nothing actionable follows.',
       },
       {
         role: 'user',
@@ -1024,12 +1222,14 @@ export async function handleReflect(operation, snapshot, deps = defaultDeps()) {
         .map((i) => memories[i].id),
     }))
     .filter((r) => r.description && r.description.length > 0);
+  const nextIntent = normalizeNextIntent(result.nextIntent, currentContext.currentTime);
   await deps.callTool('aitown.save_reflections', {
     worldId: args.worldId,
     agentId: args.agentId,
     playerId: args.playerId,
     operationId: operation.operationId,
     reflections,
+    nextIntent,
   });
 }
 

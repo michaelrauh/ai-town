@@ -233,6 +233,11 @@ describe('inspector search', () => {
         }),
       ]),
     );
+    expect(searchInspectorRecords(records, 'follow schedule')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'Goals', targetTab: 'characters', playerId: 'p:1' }),
+      ]),
+    );
     expect(searchInspectorRecords(records, 'ignite')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ category: 'Objects', targetTab: 'perception', playerId: 'p:1' }),

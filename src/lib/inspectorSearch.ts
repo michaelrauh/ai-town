@@ -95,6 +95,22 @@ export function buildInspectorSearchRecords({
     );
     records.push(
       record({
+        id: `goal:${context.self.id}`,
+        category: 'Goals',
+        title: `${name} goal`,
+        excerpt: compact([
+          context.currentGoal.description,
+          context.currentGoal.source,
+          context.currentGoal.rationale,
+          context.goalStatus.scheduleConflict ? 'schedule conflict' : null,
+        ]),
+        targetTab: 'characters',
+        playerId: context.self.id,
+        values: [context.currentGoal, context.explicitIntent, context.goalStatus],
+      }),
+    );
+    records.push(
+      record({
         id: `state:${context.self.id}`,
         category: 'State',
         title: `${name} current state`,

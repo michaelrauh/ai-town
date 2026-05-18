@@ -14,6 +14,7 @@ import { LLMMessage, chatCompletion, fetchEmbedding } from '../util/llm';
 import { asyncMap } from '../util/asyncMap';
 import { GameId, agentId, conversationId, playerId } from '../aiTown/ids';
 import { SerializedPlayer } from '../aiTown/player';
+import { agentIntent } from '../aiTown/agentIntent';
 import { memoryFields } from './schema';
 import * as embeddingsCache from './embeddingsCache';
 
@@ -456,6 +457,7 @@ export const mcpSaveReflections = action({
         importance: v.number(),
       }),
     ),
+    nextIntent: v.optional(v.union(v.object(agentIntent), v.null())),
   },
   handler: async (ctx, args) => {
     const enriched = await Promise.all(
@@ -473,17 +475,24 @@ export const mcpSaveReflections = action({
       worldId: args.worldId,
       agentId: args.agentId,
       operationId: args.operationId,
+      nextIntent: args.nextIntent,
     });
   },
 });
 
 export const finishReflectInput = internalMutation({
-  args: { worldId: v.id('worlds'), agentId, operationId: v.string() },
+  args: {
+    worldId: v.id('worlds'),
+    agentId,
+    operationId: v.string(),
+    nextIntent: v.optional(v.union(v.object(agentIntent), v.null())),
+  },
   handler: async (ctx, args) => {
     const { insertInput } = await import('../aiTown/insertInput');
-    return await insertInput(ctx, args.worldId, 'finishAgentOperation', {
+    return await insertInput(ctx, args.worldId, 'finishReflect', {
       agentId: args.agentId,
       operationId: args.operationId,
+      nextIntent: args.nextIntent,
     });
   },
 });

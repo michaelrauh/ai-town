@@ -365,6 +365,26 @@ export function tools() {
               additionalProperties: false,
             },
           },
+          nextIntent: {
+            anyOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: { type: 'string' },
+                  description: { type: 'string' },
+                  rationale: { type: 'string' },
+                  source: { type: 'string' },
+                  created: { type: 'number' },
+                  expiresAt: { type: 'number' },
+                  priority: { type: 'number' },
+                  target: { type: 'object' },
+                },
+                required: ['kind', 'description', 'rationale', 'source', 'created', 'expiresAt', 'priority'],
+                additionalProperties: true,
+              },
+              { type: 'null' },
+            ],
+          },
         },
         required: ['agentId', 'playerId', 'operationId', 'reflections'],
         additionalProperties: false,
@@ -558,6 +578,7 @@ export async function callTool(name, args) {
         playerId: args.playerId,
         operationId: args.operationId,
         reflections: args.reflections,
+        nextIntent: args.nextIntent,
       });
       return textContent(await waitForInput(result));
     }

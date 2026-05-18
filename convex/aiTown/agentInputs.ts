@@ -21,6 +21,7 @@ import { point } from '../util/types';
 import { Descriptions } from '../../data/characters';
 import { AgentDescription } from './agentDescription';
 import { Agent } from './agent';
+import { agentIntent } from './agentIntent';
 
 export const agentInputs = {
   finishAgentOperation: inputHandler({
@@ -64,6 +65,32 @@ export const agentInputs = {
         delete agent.inProgressOperation;
         delete agent.toRemember;
         agent.toReflect = true;
+      }
+      return null;
+    },
+  }),
+  finishReflect: inputHandler({
+    args: {
+      operationId: v.string(),
+      agentId,
+      nextIntent: v.optional(v.union(v.object(agentIntent), v.null())),
+    },
+    handler: (game, now, args) => {
+      const agentId = parseGameId('agents', args.agentId);
+      const agent = game.world.agents.get(agentId);
+      if (!agent) {
+        throw new Error(`Couldn't find agent: ${agentId}`);
+      }
+      if (
+        !agent.inProgressOperation ||
+        agent.inProgressOperation.operationId !== args.operationId
+      ) {
+        console.debug(`Agent ${agentId} isn't reflecting ${args.operationId}`);
+        return null;
+      }
+      delete agent.inProgressOperation;
+      if (args.nextIntent !== undefined) {
+        agent.intent = args.nextIntent ?? undefined;
       }
       return null;
     },

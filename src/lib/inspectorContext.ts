@@ -1,4 +1,5 @@
-import { gameTimeOfDay } from '../../convex/constants';
+import { GAME_DAY_MS, SCHEDULE_BLOCKS, gameTimeOfDay } from '../../convex/constants';
+import type { AgentGoalStatus, AgentIntent } from '../../convex/aiTown/agentIntent';
 import { GROUND_ITEM_PICKUP_RADIUS } from '../../convex/aiTown/inventory';
 import type { GroundItem, InventorySlot } from '../../convex/aiTown/inventory';
 import type { GameId } from '../../convex/aiTown/ids';
@@ -75,6 +76,9 @@ export type InspectorContext = {
     description: string;
     bbox: Poi['bbox'];
   } | null;
+  explicitIntent: AgentIntent | null;
+  currentGoal: AgentIntent;
+  goalStatus: AgentGoalStatus;
   schedule: {
     currentBlock: string;
     scheduledActivity: string | null;
@@ -163,6 +167,18 @@ export function buildInspectorContext(
     ? game.worldMap.pois.find((poi) => poi.id === scheduled.poi)
     : undefined;
   const conversation = game.world.playerConversation(player);
+  const atScheduledPoi = !!scheduledPoi && currentPoi?.id === scheduledPoi.id;
+  const explicitIntent = activeExplicitIntent(agent?.intent, currentTime);
+  const currentGoal =
+    explicitIntent ??
+    followScheduleGoal({
+      now: currentTime,
+      block: currentBlock,
+      activity: scheduled?.activity,
+      poiId: scheduled?.poi,
+      poiName: scheduledPoi?.name,
+      atScheduledPoi,
+    });
 
   return {
     self: {
@@ -198,6 +214,16 @@ export function buildInspectorContext(
           bbox: currentPoi.bbox,
         }
       : null,
+    explicitIntent,
+    currentGoal,
+    goalStatus: goalStatus({
+      explicitIntent,
+      currentGoal,
+      expiredExplicitIntent: !!agent?.intent && !explicitIntent,
+      scheduledPoiId: scheduled?.poi,
+      currentPoiId: currentPoi?.id,
+      pathfindingDestination: player.pathfinding?.destination,
+    }),
     schedule: {
       currentBlock,
       scheduledActivity: scheduled?.activity ?? null,
@@ -207,7 +233,7 @@ export function buildInspectorContext(
             name: scheduledPoi?.name ?? scheduled.poi,
           }
         : null,
-      atScheduledPoi: !!scheduledPoi && currentPoi?.id === scheduledPoi.id,
+      atScheduledPoi,
     },
     surroundings: {
       nearbyAffordances: currentPoi ? flattenPoiAffordances(currentPoi) : [],
@@ -258,6 +284,89 @@ export function buildInspectorContext(
       agentOperation: agent?.inProgressOperation ?? null,
     },
     recentConversationMessages: [],
+  };
+}
+
+function activeExplicitIntent(intent: AgentIntent | undefined, currentTime: number) {
+  return intent && intent.expiresAt > currentTime ? intent : null;
+}
+
+function scheduleBlockEnd(currentTime: number) {
+  const blockDuration = GAME_DAY_MS / SCHEDULE_BLOCKS.length;
+  const dayOffset = ((currentTime % GAME_DAY_MS) + GAME_DAY_MS) % GAME_DAY_MS;
+  return currentTime + (blockDuration - (dayOffset % blockDuration));
+}
+
+function followScheduleGoal({
+  now,
+  block,
+  activity,
+  poiId,
+  poiName,
+  atScheduledPoi,
+}: {
+  now: number;
+  block: string;
+  activity?: string | null;
+  poiId?: string | null;
+  poiName?: string | null;
+  atScheduledPoi?: boolean;
+}): AgentIntent {
+  const place = poiName ?? poiId;
+  const description =
+    activity && place
+      ? `Follow schedule: ${activity} at ${place}`
+      : activity
+        ? `Follow schedule: ${activity}`
+        : place
+          ? `Follow schedule at ${place}`
+          : `Follow schedule for ${block}`;
+  const target: NonNullable<AgentIntent['target']> = {};
+  if (poiId) {
+    target.poiId = poiId;
+  }
+  if (activity) {
+    target.activityDescription = activity;
+  }
+  return {
+    kind: 'followSchedule',
+    description,
+    rationale: atScheduledPoi
+      ? `The current schedule block is ${block}, and this character is at the scheduled place.`
+      : `The current schedule block is ${block}.`,
+    source: 'schedule',
+    created: now,
+    expiresAt: scheduleBlockEnd(now),
+    priority: 0,
+    target: Object.keys(target).length > 0 ? target : undefined,
+  };
+}
+
+function goalStatus({
+  explicitIntent,
+  currentGoal,
+  expiredExplicitIntent,
+  scheduledPoiId,
+  currentPoiId,
+  pathfindingDestination,
+}: {
+  explicitIntent: AgentIntent | null;
+  currentGoal: AgentIntent;
+  expiredExplicitIntent: boolean;
+  scheduledPoiId?: string | null;
+  currentPoiId?: string | null;
+  pathfindingDestination?: { x: number; y: number } | null;
+}): AgentGoalStatus {
+  const targetPoiId = explicitIntent?.target?.poiId ?? null;
+  const scheduleConflict =
+    !!explicitIntent &&
+    !!scheduledPoiId &&
+    (targetPoiId ? targetPoiId !== scheduledPoiId : currentPoiId !== scheduledPoiId);
+  return {
+    hasExplicitIntent: !!explicitIntent,
+    expiredExplicitIntent,
+    scheduleConflict,
+    movementReason: pathfindingDestination ? currentGoal.description : null,
   };
 }
 

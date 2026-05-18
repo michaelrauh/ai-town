@@ -1,5 +1,7 @@
 import { Id } from '../_generated/dataModel';
+import { Player } from './player';
 import { AgentDescription } from './agentDescription';
+import { currentGoalForAgent } from './agent';
 import { Game } from './game';
 
 function openLayer(width: number, height: number) {
@@ -79,7 +81,7 @@ function makeConversationGame(numMessages: number) {
   );
 }
 
-function makeIdleAgentGame(player: any = {}) {
+function makeIdleAgentGame(player: any = {}, agent: any = {}, agentDescription: any = {}) {
   return new Game(
     {
       _id: 'engine' as Id<'engines'>,
@@ -103,10 +105,12 @@ function makeIdleAgentGame(player: any = {}) {
           },
         ],
         conversations: [],
-        agents: [{ id: 'a:1', playerId: 'p:1' }],
+        agents: [{ id: 'a:1', playerId: 'p:1', ...agent }],
       },
       playerDescriptions: [{ playerId: 'p:1', name: 'NPC', character: 'f1', description: 'NPC' }],
-      agentDescriptions: [{ agentId: 'a:1', identity: 'Helpful', plan: 'Do things' }],
+      agentDescriptions: [
+        { agentId: 'a:1', identity: 'Helpful', plan: 'Do things', ...agentDescription },
+      ],
       worldMap: {
         width: 5,
         height: 5,
@@ -197,6 +201,148 @@ describe('Agent object affordances', () => {
     agent.tick(game, 3000);
 
     expect(game.pendingOperations).toHaveLength(0);
+  });
+});
+
+describe('Agent explicit goals', () => {
+  test('legacy agents expose a derived schedule goal', () => {
+    const game = makeIdleAgentGame(
+      {},
+      {},
+      { schedule: [{ block: 'morning', activity: 'Make coffee', poi: 'coffee-shop' }] },
+    );
+    const agent = game.world.agents.get('a:1' as any)!;
+
+    const goal = currentGoalForAgent(game, agent, 0);
+
+    expect(goal).toMatchObject({
+      kind: 'followSchedule',
+      source: 'schedule',
+      description: 'Follow schedule: Make coffee at Coffee Shop',
+      target: { poiId: 'coffee-shop', activityDescription: 'Make coffee' },
+    });
+  });
+
+  test('explicit activity goals override schedule travel', () => {
+    const game = makeIdleAgentGame(
+      { position: { x: 0, y: 0 } },
+      {
+        intent: {
+          kind: 'activity',
+          description: 'Stay home and rest',
+          rationale: 'A conversation made rest more important than the schedule.',
+          source: 'reflection',
+          created: 0,
+          expiresAt: 60_000,
+          priority: 8,
+          target: { activityDescription: 'Resting at home' },
+        },
+      },
+      { schedule: [{ block: 'morning', activity: 'Make coffee', poi: 'coffee-shop' }] },
+    );
+    const agent = game.world.agents.get('a:1' as any)!;
+    const player = game.world.players.get('p:1' as any)!;
+
+    agent.tick(game, 0);
+
+    expect(player.activity?.description).toBe('Resting at home');
+    expect(player.pathfinding).toBeUndefined();
+    expect(agent.intent).toBeUndefined();
+  });
+
+  test('expired goals clear and fall back to schedule travel', () => {
+    const game = makeIdleAgentGame(
+      { position: { x: 0, y: 0 } },
+      {
+        intent: {
+          kind: 'activity',
+          description: 'Expired rest',
+          rationale: 'Old conversation follow-up.',
+          source: 'reflection',
+          created: 0,
+          expiresAt: 1,
+          priority: 8,
+          target: { activityDescription: 'Rest' },
+        },
+      },
+      { schedule: [{ block: 'morning', activity: 'Make coffee', poi: 'coffee-shop' }] },
+    );
+    const agent = game.world.agents.get('a:1' as any)!;
+    const player = game.world.players.get('p:1' as any)!;
+
+    agent.tick(game, 3000);
+
+    expect(agent.intent).toBeUndefined();
+    expect(player.pathfinding?.destination).toEqual({ x: 2, y: 2 });
+  });
+
+  test('talkToPlayer goals start a conversation invite', () => {
+    const game = makeIdleAgentGame(
+      {},
+      {
+        intent: {
+          kind: 'talkToPlayer',
+          description: 'Tell Alice that Me is sick',
+          rationale: 'Alice should know about the illness.',
+          source: 'reflection',
+          created: 0,
+          expiresAt: 60_000,
+          priority: 7,
+          target: { playerId: 'p:2' },
+        },
+      },
+    );
+    game.world.players.set(
+      'p:2' as any,
+      new Player({
+        id: 'p:2',
+        lastInput: 0,
+        position: { x: 3, y: 2 },
+        facing: { dx: -1, dy: 0 },
+        speed: 0,
+      }),
+    );
+    const agent = game.world.agents.get('a:1' as any)!;
+
+    agent.tick(game, 3000);
+
+    expect(game.world.conversations.size).toBe(1);
+    expect(agent.intent).toBeUndefined();
+  });
+
+  test('stayAtPoi goals prevent deterministic schedule travel while active', () => {
+    const game = makeIdleAgentGame(
+      { position: { x: 0, y: 0 } },
+      {
+        intent: {
+          kind: 'stayAtPoi',
+          description: 'Stay at the park to avoid Me',
+          rationale: 'The last conversation made distance important.',
+          source: 'reflection',
+          created: 0,
+          expiresAt: 60_000,
+          priority: 9,
+          target: { poiId: 'park' },
+        },
+      },
+      { schedule: [{ block: 'morning', activity: 'Make coffee', poi: 'coffee-shop' }] },
+    );
+    game.worldMap.pois.push({
+      id: 'park',
+      name: 'Park',
+      kind: 'park',
+      bbox: { x: 0, y: 0, w: 1, h: 1 },
+      description: 'A quiet park.',
+      subObjects: [],
+    });
+    const agent = game.world.agents.get('a:1' as any)!;
+    const player = game.world.players.get('p:1' as any)!;
+
+    agent.tick(game, 3000);
+
+    expect(player.activity?.description).toBe('Stay at the park to avoid Me');
+    expect(player.pathfinding).toBeUndefined();
+    expect(agent.intent?.kind).toBe('stayAtPoi');
   });
 });
 

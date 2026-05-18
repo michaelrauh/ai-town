@@ -360,6 +360,12 @@ describe('inspector context helpers', () => {
       scheduledPoi: { id: 'cafe', name: 'Cafe' },
       atScheduledPoi: true,
     });
+    expect(context?.currentGoal).toMatchObject({
+      kind: 'followSchedule',
+      source: 'schedule',
+      target: { poiId: 'cafe', activityDescription: 'Make coffee' },
+    });
+    expect(context?.goalStatus.movementReason).toBe('Follow schedule: Make coffee at Cafe');
     expect(context?.state.activity?.description).toBe('Sweeping');
     expect(context?.state.objectUse?.objectName).toBe('Burner');
     expect(context?.state.pathfinding?.destination).toEqual({ x: 4, y: 4 });
@@ -367,5 +373,44 @@ describe('inspector context helpers', () => {
       'participating',
       'participating',
     ]);
+  });
+
+  test('includes explicit intent and schedule conflict status', () => {
+    const game = makeServerGame({
+      agents: [
+        {
+          id: 'a:1',
+          playerId: 'p:1',
+          intent: {
+            kind: 'stayAtPoi',
+            description: 'Stay away from the cafe crowd',
+            rationale: 'A recent conversation made quiet time important.',
+            source: 'reflection',
+            created: 0,
+            expiresAt: 5000,
+            priority: 8,
+            target: { poiId: 'home' },
+          },
+        },
+      ],
+      pois: [
+        cafePoi(),
+        {
+          id: 'home',
+          name: 'Home',
+          kind: 'home',
+          bbox: { x: 12, y: 12, w: 3, h: 3 },
+          description: 'A quiet home.',
+          subObjects: [],
+        },
+      ],
+    });
+
+    const context = buildInspectorContext(game, 'p:1' as any, 1000);
+
+    expect(context?.explicitIntent?.kind).toBe('stayAtPoi');
+    expect(context?.currentGoal.description).toBe('Stay away from the cafe crowd');
+    expect(context?.goalStatus.hasExplicitIntent).toBe(true);
+    expect(context?.goalStatus.scheduleConflict).toBe(true);
   });
 });

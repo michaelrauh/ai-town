@@ -1367,24 +1367,6 @@ const NARRATOR_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'offer_choice',
-      description:
-        'Register a button the player can press next turn. actionId must be from the registeredActions list. payload is required for move_to_room ({roomId}) and look_at ({affordanceId}).',
-      parameters: {
-        type: 'object',
-        properties: {
-          label: { type: 'string', maxLength: 80 },
-          actionId: { type: 'string' },
-          payload: { type: 'object', additionalProperties: true },
-        },
-        required: ['label', 'actionId'],
-        additionalProperties: false,
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'end_turn',
       description: 'Mark the turn complete. Must be the LAST tool you call.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
@@ -1408,18 +1390,22 @@ function narratorSystemPrompt(ctx) {
     .map((a) => `- look_at(${a.id}) — "${a.label}"`)
     .join('\n');
   const exitLines = (ctx.exits ?? []).map((e) => `- move_to_room({roomId: "${e}"})`).join('\n');
+  const actionLines = (ctx.availableActions ?? [])
+    .map((choice) => {
+      const payload =
+        choice.payload && Object.keys(choice.payload).length > 0
+          ? ` payload=${JSON.stringify(choice.payload)}`
+          : '';
+      return `- "${choice.label}" -> ${choice.actionId}${payload}`;
+    })
+    .join('\n');
 
-  const beatActive = ctx.beatId && Array.isArray(ctx.beatChoices) && ctx.beatChoices.length > 0;
+  const beatActive = Boolean(ctx.beatId || ctx.beatActive);
   const beatBlock = beatActive
     ? `\n# STORY BEAT ACTIVE: ${ctx.beatId}
-A scripted story beat is now active. You MUST offer EXACTLY these choices to the player via offer_choice — no exits, no look_at, no other actions:
-${ctx.beatChoices.map((c) => `- offer_choice("${c.label}", actionId="beat_choice", payload={ beatId: "${ctx.beatId}", choiceId: "${c.id}" })`).join('\n')}
-
-Paint the scene from the briefing, optionally voice one present NPC, then offer ONLY the beat choices above, then end_turn. Do NOT add wander/look/move choices during a beat — keep the player on the story rails.`
+A scripted story beat is active. The engine has already computed the legal story choices. Use them only as context; do not register, invent, or alter choices.`
     : `\n# Free play (no active beat)
-Offer 2-4 choices: examine objects, talk to NPCs, move to other rooms, wait, etc.
-- For actionId="move_to_room", pass payload={"roomId": "<exit-room-id>"} from the exits list.
-- For actionId="look_at", pass payload={"affordanceId": "<id>"} from the affordances list.
+The engine has already computed legal next actions from the room, exits, affordances, and game state. Use them only as context; do not register, invent, or alter choices.
 
 Exits (use actionId="move_to_room" with payload {roomId}):
 ${exitLines || '(none)'}
@@ -1432,13 +1418,15 @@ Other registered actions: look_around, wait, free_text.`;
   return `You are the NARRATOR of a turn-based text adventure called "New Dawn Pastures", a cozy LitRPG about Kyle Farmer inheriting his late grandfather's farm in Willow Creek.
 
 # Your role
-Paint the scene. Voice the NPCs present. Offer the player meaningful choices. You DO NOT control the world — every state change (items, hearts, clock, room moves) happens outside your tool surface.
+Paint the scene. Voice the NPCs present. You DO NOT control the world — every state change (items, hearts, clock, room moves, and choice availability) happens outside your tool surface.
 
 # Hard rules
 - You MUST call \`end_turn\` exactly once as your LAST tool call.
 - You SHOULD call \`narrate\` at least once to describe the result of the player's last action.
 - If NPCs are present, voice at most one or two of them with short, in-character lines.
 - DO NOT invent NPCs not in npcsPresent. DO NOT invent items, rooms, or affordances not in the lists below.
+- DO NOT offer, register, or imply new choices. The engine-owned next actions below are already what the player will see.
+- DO NOT imply state changed unless the briefing or state delta says it changed.
 - Keep narration tight — 1-3 short sentences per \`narrate\` call. Cozy, sensory, slightly melancholy LitRPG voice. NO markdown, NO meta-commentary.
 
 # Scene state
@@ -1447,6 +1435,11 @@ Paint the scene. Voice the NPCs present. Offer the player meaningful choices. Yo
 - Room description: ${ctx.roomDescription}
 - NPCs present: ${(ctx.npcsPresent ?? []).join(', ') || '(none)'}
 ${npcLines ? `\n# NPC voices\n${npcLines}\n` : ''}${beatBlock}
+
+# Engine-owned next actions
+${actionLines || '(none)'}
+
+${ctx.stateDelta ? `# State delta from the player action\n${JSON.stringify(ctx.stateDelta, null, 2)}\n` : ''}
 
 # Briefing for this turn
 ${ctx.briefing ?? ''}
@@ -1498,7 +1491,7 @@ async function handleNarrateScene(op) {
     {
       role: 'user',
       content:
-        "Narrate the result of the player's last action, optionally voice an NPC, then offer 2-4 choices, then call end_turn.",
+        "Narrate the result of the player's last action, optionally voice an NPC, then call end_turn.",
     },
   ];
 
@@ -1556,13 +1549,6 @@ async function handleNarrateScene(op) {
             operationId,
             speaker: args.speaker,
             text: args.text,
-          });
-        } else if (name === 'offer_choice') {
-          await serverCallTool('aitown.offer_choice', {
-            operationId,
-            label: args.label,
-            actionId: args.actionId,
-            payload: args.payload,
           });
         } else if (name === 'end_turn') {
           await serverCallTool('aitown.end_turn', { operationId });

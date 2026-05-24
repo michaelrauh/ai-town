@@ -14,8 +14,8 @@ export type Beat = {
    */
   openingBriefing: (state: NarrativeStateDoc) => string;
   /**
-   * Choices the player MUST pick from. Each becomes an offer_choice with
-   * actionId='beat_choice' and payload={beatId, choiceId}.
+   * Choices the player MUST pick from. The engine exposes each as a legal
+   * action with actionId='beat_choice' and payload={beatId, choiceId}.
    * Return [] to auto-advance with a single implicit "continue".
    */
   choices: (state: NarrativeStateDoc) => Array<{ id: string; label: string }>;
@@ -26,7 +26,7 @@ export type Beat = {
   resolve: (state: NarrativeStateDoc, choiceId: string) => string;
 };
 
-// Per-beat-choice payload sent through the offer_choice tool.
+// Per-beat-choice payload stored on the engine-owned legal action.
 export type BeatChoicePayload = { beatId: string; choiceId: string };
 
 // Registry: assembled by beats/index.ts to keep beats discoverable.

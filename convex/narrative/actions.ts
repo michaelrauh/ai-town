@@ -84,8 +84,8 @@ const builtins: Record<string, ScriptedAction> = {
     description: 'Player typed free-form text. Painted by the narrator with no state change.',
     run: (_state, _payload, _now) => ({
       narratorBriefing:
-        "The player has spoken or acted freely. Respond in-character through the NPCs present and through narration. Do not invent items or change the world; this action has no mechanical effect.",
-      clockMinutes: 5,
+        'The player has spoken or acted freely. Respond in-character through the NPCs present and through narration. Do not invent items or change the world; this action has no mechanical effect.',
+      clockMinutes: 0,
     }),
   },
 

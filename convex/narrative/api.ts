@@ -1,6 +1,6 @@
 import { v } from 'convex/values';
 import { mutation, query } from '../_generated/server';
-import { advanceClock, makeInitialState, NARRATOR_TOOL_BUDGET } from './state';
+import { advanceClock, makeInitialState, NARRATOR_TOOL_BUDGET, type PendingChoice } from './state';
 import { getAction } from './actions';
 import { getBeat, listBeats } from './beats';
 import { selectBeat } from './triggers';
@@ -115,10 +115,11 @@ function validateNarrativeState(state: any): StateInvariant[] {
         message: `Active beat "${state.beatActive}" is already marked completed.`,
       });
     }
-    if (!pendingChoicesMatchActiveBeat(state)) {
+    if (!pendingChoicesMatchAvailableActions(state)) {
       invariants.push({
         level: 'warning',
-        message: 'Pending choices drifted from the active beat and were repaired for display.',
+        message:
+          'Saved choices drifted from the engine legal actions and were repaired for display.',
       });
     }
     return invariants;
@@ -131,7 +132,13 @@ function validateNarrativeState(state: any): StateInvariant[] {
       message: 'Beat choices are present even though no beat is active.',
     });
   }
-  if (!state.narrating && state.pendingChoices.length === 0) {
+  if (!pendingChoicesMatchAvailableActions(state)) {
+    invariants.push({
+      level: 'warning',
+      message: 'Saved choices drifted from the engine legal actions and were repaired for display.',
+    });
+  }
+  if (!state.narrating && availableActions(state).length === 0) {
     invariants.push({
       level: 'warning',
       message: 'No pending choices are available while narration is idle.',
@@ -141,14 +148,39 @@ function validateNarrativeState(state: any): StateInvariant[] {
 }
 
 function displayPendingChoices(state: any) {
-  if (!state.beatActive) {
-    return state.pendingChoices;
+  return availableActions(state);
+}
+
+function availableActions(state: any): PendingChoice[] {
+  if (state.beatActive) {
+    return canonicalBeatPendingChoices(state.beatActive, state);
   }
-  const canonical = canonicalBeatPendingChoices(state.beatActive, state);
-  if (canonical.length === 0) {
-    return state.pendingChoices;
+
+  if (!roomExists(state.location)) return [];
+
+  const room = getRoom(state.location as RoomId);
+  const choices: PendingChoice[] = [];
+
+  for (const affordance of room.affordances ?? []) {
+    choices.push({
+      label: affordance.label,
+      actionId: 'look_at',
+      payload: { affordanceId: affordance.id },
+    });
   }
-  return canonical;
+
+  for (const exit of room.exits) {
+    choices.push({
+      label: `Walk to ${getRoom(exit).name}`,
+      actionId: 'move_to_room',
+      payload: { roomId: exit },
+    });
+  }
+
+  choices.push({ label: 'Look around', actionId: 'look_around' });
+  choices.push({ label: 'Wait a while', actionId: 'wait' });
+
+  return uniquePendingChoices(choices);
 }
 
 function canonicalBeatPendingChoices(beatId: string, state: any) {
@@ -165,9 +197,8 @@ function promptBeatChoices(beatId: string, state: any): Array<{ id: string; labe
   return beat.choices(state);
 }
 
-function pendingChoicesMatchActiveBeat(state: any): boolean {
-  if (!state.beatActive) return true;
-  const canonical = canonicalBeatPendingChoices(state.beatActive, state);
+function pendingChoicesMatchAvailableActions(state: any): boolean {
+  const canonical = availableActions(state);
   if (canonical.length === 0) return state.pendingChoices.length === 0;
   if (state.pendingChoices.length !== canonical.length) return false;
   return canonical.every((choice) =>
@@ -175,19 +206,35 @@ function pendingChoicesMatchActiveBeat(state: any): boolean {
   );
 }
 
-function validActiveBeatChoice(choice: any, beatId: string, state: any): boolean {
-  return canonicalBeatPendingChoices(beatId, state).some((canonical) =>
-    samePendingChoice(choice, canonical),
-  );
+function uniquePendingChoices(choices: PendingChoice[]): PendingChoice[] {
+  const unique: PendingChoice[] = [];
+  for (const choice of choices) {
+    if (!unique.some((candidate) => samePendingChoice(candidate, choice))) {
+      unique.push(choice);
+    }
+  }
+  return unique;
 }
 
 function samePendingChoice(a: any, b: any): boolean {
   return (
     a?.label === b?.label &&
     a?.actionId === b?.actionId &&
-    a?.payload?.beatId === b?.payload?.beatId &&
-    a?.payload?.choiceId === b?.payload?.choiceId
+    sameChoicePayload(a?.actionId, a?.payload, b?.payload)
   );
+}
+
+function sameChoicePayload(actionId: string | undefined, a: any, b: any): boolean {
+  switch (actionId) {
+    case 'beat_choice':
+      return a?.beatId === b?.beatId && a?.choiceId === b?.choiceId;
+    case 'move_to_room':
+      return a?.roomId === b?.roomId;
+    case 'look_at':
+      return a?.affordanceId === b?.affordanceId;
+    default:
+      return true;
+  }
 }
 
 function choiceLabelForState(state: any, actionId: string, payload?: any) {
@@ -203,10 +250,7 @@ function choiceLabelForState(state: any, actionId: string, payload?: any) {
 
 function choiceMatchesAction(choice: any, actionId: string, payload?: any): boolean {
   if (choice?.actionId !== actionId) return false;
-  if (actionId !== 'beat_choice') return true;
-  return (
-    choice?.payload?.beatId === payload?.beatId && choice?.payload?.choiceId === payload?.choiceId
-  );
+  return sameChoicePayload(actionId, choice?.payload, payload);
 }
 
 function beatTitle(beatId: string) {
@@ -316,6 +360,32 @@ function beatLead(beatId: string, state: any, ready: boolean): BeatLead {
   }
 }
 
+function inspectorStateSnapshot(state: any) {
+  return {
+    day: state.day,
+    timeOfDay: state.timeOfDay,
+    clockMinutes: state.clockMinutes,
+    location: state.location,
+    coins: state.coins,
+    inventory: state.inventory,
+    hearts: state.hearts,
+    flags: state.flags,
+    beatActive: state.beatActive,
+    beatsCompleted: state.beatsCompleted,
+    turn: state.turn,
+  };
+}
+
+function stateDelta(before: Record<string, unknown>, after: Record<string, unknown>) {
+  const delta: Record<string, { before: unknown; after: unknown }> = {};
+  for (const key of Object.keys(after)) {
+    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
+      delta[key] = { before: before[key], after: after[key] };
+    }
+  }
+  return delta;
+}
+
 /**
  * Public query: the current scene from the perspective of a save slot.
  */
@@ -389,6 +459,8 @@ export const debugPanel = query({
         briefing: (op.context as any)?.briefing ?? null,
         roomName: (op.context as any)?.roomName ?? null,
         location: (op.context as any)?.location ?? null,
+        availableActions: (op.context as any)?.availableActions ?? [],
+        stateDelta: (op.context as any)?.stateDelta ?? null,
       },
       toolCalls: op.toolCalls ?? [],
     }));
@@ -418,6 +490,7 @@ export const debugPanel = query({
         beatActive: save.beatActive,
         beatsCompleted: save.beatsCompleted,
         pendingChoices: save.pendingChoices,
+        availableActions: availableActions(save as any),
         turn: save.turn,
         narrating: save.narrating,
         createdAt: save.createdAt,
@@ -445,13 +518,12 @@ export const startGame = mutation({
     // Fire the trigger evaluator on the fresh state so Beat 1 can open immediately.
     const beat = selectBeat(initial as any);
     let briefing =
-      "Kyle Farmer has just arrived at his late grandfather's cottage in Willow Creek. Open the scene briefly and offer 3-4 choices.";
-    let beatChoices: Array<{ id: string; label: string }> | null = null;
+      "Kyle Farmer has just arrived at his late grandfather's cottage in Willow Creek. Open the scene briefly.";
     if (beat) {
       initial.beatActive = beat.id;
       briefing = beat.openingBriefing(initial as any);
-      beatChoices = beat.choices(initial as any);
     }
+    initial.pendingChoices = availableActions(initial);
 
     let saveId;
     if (existing) {
@@ -464,7 +536,6 @@ export const startGame = mutation({
       reason: 'open_game',
       briefing,
       beatId: beat?.id ?? null,
-      beatChoices,
     });
     return saveId;
   },
@@ -495,7 +566,17 @@ export const submitAction = mutation({
       throw new Error('Narrator is mid-turn. Wait for the narration to finish.');
     }
 
+    if (args.actionId !== 'free_text') {
+      const legal = availableActions(save as any).some((choice) =>
+        choiceMatchesAction(choice, args.actionId, args.payload),
+      );
+      if (!legal) {
+        throw new Error(`Action is not currently available: ${args.actionId}`);
+      }
+    }
+
     const now = Date.now();
+    const stateBefore = inspectorStateSnapshot(save as any);
     const activeBeat = save.beatActive ? getBeat(save.beatActive) : null;
     const softLockedAction = Boolean(activeBeat && args.actionId !== 'beat_choice');
     const action = softLockedAction ? null : getAction(args.actionId);
@@ -546,9 +627,8 @@ export const submitAction = mutation({
       advanceClock(working as any, result.clockMinutes ?? 15);
     }
 
-    // Increment turn and clear pending choices (narrator will repopulate).
+    // Increment turn. Choices are engine-owned, so recompute them after action/trigger resolution.
     working.turn += 1;
-    working.pendingChoices = [];
     working.narrating = true;
     working.updatedAt = now;
 
@@ -557,13 +637,12 @@ export const submitAction = mutation({
     }
 
     // ----- Trigger evaluation. Did a new beat open after this action? -----
-    // Skip if the action WAS a beat_choice and the beat is still expected to be cleared by it.
+    // The trigger selector returns one beat, so a single player action cannot cascade
+    // through multiple beats in the same turn.
     let briefing = result.narratorBriefing;
-    let beatChoices: Array<{ id: string; label: string }> | null = null;
     let activeBeatId: string | null = working.beatActive;
     if (working.beatActive) {
       activeBeatId = working.beatActive;
-      beatChoices = promptBeatChoices(working.beatActive, working);
     } else {
       const next = selectBeat(working);
       if (next) {
@@ -571,9 +650,11 @@ export const submitAction = mutation({
         activeBeatId = next.id;
         // The narrator paints the action result THEN the new beat opens. Stack briefings.
         briefing = `${briefing}\n\nA new beat opens: ${next.openingBriefing(working)}`;
-        beatChoices = next.choices(working);
       }
     }
+
+    working.pendingChoices = availableActions(working);
+    const stateAfter = inspectorStateSnapshot(working);
 
     await ctx.db.replace(save._id, working as any);
 
@@ -581,10 +662,14 @@ export const submitAction = mutation({
     await enqueueNarratorOp(ctx, save._id, working.turn, {
       reason: 'scripted_action',
       actionId: args.actionId,
+      actionLabel: chosenLabel,
+      actionPayload: args.payload ?? null,
       briefing,
       freeText: args.freeText ?? null,
       beatId: activeBeatId,
-      beatChoices,
+      stateBefore,
+      stateAfter,
+      stateDelta: stateDelta(stateBefore, stateAfter),
     });
 
     return { ok: true, turn: working.turn };
@@ -604,10 +689,6 @@ async function enqueueNarratorOp(
   if (!save) throw new Error(`enqueueNarratorOp: missing save ${saveId}`);
   const room = roomExists(save.location) ? getRoom(save.location) : null;
   const npcsPresent = room ? npcsInRoom(room.id, save.timeOfDay) : [];
-  const contextBeatChoices =
-    save.beatActive && !Array.isArray(context.beatChoices)
-      ? promptBeatChoices(save.beatActive, save)
-      : context.beatChoices;
   const npcVoices = npcsPresent
     .map((name) => {
       const desc = Descriptions.find((d) => d.name === name);
@@ -629,7 +710,7 @@ async function enqueueNarratorOp(
     context: {
       ...context,
       beatId: context.beatId ?? save.beatActive,
-      beatChoices: contextBeatChoices,
+      availableActions: availableActions(save),
       day: save.day,
       timeOfDay: save.timeOfDay,
       location: save.location,
@@ -648,6 +729,12 @@ async function enqueueNarratorOp(
       toolBudget: NARRATOR_TOOL_BUDGET,
     },
     created: Date.now(),
+    ...(typeof context.actionId === 'string' ? { actionId: context.actionId } : {}),
+    ...(typeof context.actionLabel === 'string' ? { actionLabel: context.actionLabel } : {}),
+    ...(context.actionPayload !== undefined ? { actionPayload: context.actionPayload } : {}),
+    ...(typeof context.freeText === 'string' ? { freeText: context.freeText } : {}),
+    ...(context.stateBefore !== undefined ? { stateBefore: context.stateBefore } : {}),
+    ...(context.stateAfter !== undefined ? { stateAfter: context.stateAfter } : {}),
   });
 }
 
@@ -715,17 +802,9 @@ export const recordNarratorToolFailure = mutation({
 export const narratorTool = mutation({
   args: {
     operationId: v.id('narrativeOperations'),
-    tool: v.union(
-      v.literal('narrate'),
-      v.literal('npc_speak'),
-      v.literal('offer_choice'),
-      v.literal('end_turn'),
-    ),
+    tool: v.union(v.literal('narrate'), v.literal('npc_speak'), v.literal('end_turn')),
     text: v.optional(v.string()),
     speaker: v.optional(v.string()),
-    label: v.optional(v.string()),
-    actionId: v.optional(v.string()),
-    payload: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     const op = await ctx.db.get(args.operationId);
@@ -738,7 +817,7 @@ export const narratorTool = mutation({
     const save = await ctx.db.get(op.saveId);
     if (!save) throw new Error(`narratorTool: missing save for op`);
 
-    // Per-turn cap. Includes narrate + npc_speak + offer_choice.
+    // Per-turn cap. Includes presentation tools only; choices are engine-owned.
     const used = (save.flags['__toolCallsThisTurn'] as number | undefined) ?? 0;
     const budget = (op.context as any).toolBudget ?? NARRATOR_TOOL_BUDGET;
     if (args.tool !== 'end_turn' && used >= budget) {
@@ -747,12 +826,7 @@ export const narratorTool = mutation({
 
     const now = Date.now();
     const transcript = save.transcript.slice();
-    const activeBeatId = save.beatActive && getBeat(save.beatActive) ? save.beatActive : null;
-    const pendingChoices = activeBeatId
-      ? save.pendingChoices.filter((choice: any) =>
-          validActiveBeatChoice(choice, activeBeatId, save),
-        )
-      : save.pendingChoices.slice();
+    const pendingChoices = availableActions(save as any);
     const flags = { ...save.flags };
 
     let output: Record<string, unknown> = {};
@@ -794,90 +868,14 @@ export const narratorTool = mutation({
         };
         break;
       }
-      case 'offer_choice': {
-        const label = (args.label ?? '').trim();
-        const actionId = (args.actionId ?? '').trim();
-        if (!label) throw new Error('offer_choice: label is required');
-        if (label.length > 80) throw new Error('offer_choice: label exceeds 80 chars');
-        if (!actionId) throw new Error('offer_choice: actionId is required');
-        if (!getAction(actionId)) {
-          throw new Error(
-            `offer_choice: actionId "${actionId}" is not a registered scripted action`,
-          );
-        }
-        if (activeBeatId) {
-          const offeredChoice = { label, actionId, payload: args.payload };
-          if (!validActiveBeatChoice(offeredChoice, activeBeatId, save)) {
-            throw new Error(
-              `offer_choice: active beat ${activeBeatId} only accepts its scripted beat choices`,
-            );
-          }
-          if (!pendingChoices.some((choice: any) => samePendingChoice(choice, offeredChoice))) {
-            pendingChoices.push(offeredChoice);
-            output = {
-              effect: 'beat_choice_added',
-              choice: offeredChoice,
-              pendingChoiceCount: pendingChoices.length,
-            };
-          } else {
-            output = {
-              effect: 'beat_choice_already_present',
-              choice: offeredChoice,
-              pendingChoiceCount: pendingChoices.length,
-            };
-          }
-          flags['__toolCallsThisTurn'] = used + 1;
-          break;
-        }
-        if (pendingChoices.length >= 5) {
-          throw new Error('offer_choice: max 5 choices per turn');
-        }
-        const choice = { label, actionId, payload: args.payload };
-        pendingChoices.push(choice);
-        flags['__toolCallsThisTurn'] = used + 1;
-        output = {
-          effect: 'pending_choice_added',
-          choice,
-          pendingChoiceCount: pendingChoices.length,
-        };
-        break;
-      }
       case 'end_turn': {
-        if (activeBeatId) {
-          pendingChoices.splice(
-            0,
-            pendingChoices.length,
-            ...canonicalBeatPendingChoices(activeBeatId, save),
-          );
-        }
-        // Always-available default choices so the player isn't trapped if the narrator
-        // forgets to offer anything.
-        if (!activeBeatId && pendingChoices.length === 0) {
-          const room = roomExists(save.location) ? getRoom(save.location as RoomId) : null;
-          if (room) {
-            for (const exit of room.exits) {
-              const dest = getRoom(exit);
-              if (pendingChoices.length >= 5) break;
-              pendingChoices.push({
-                label: `Walk to ${dest.name}`,
-                actionId: 'move_to_room',
-                payload: { roomId: exit },
-              });
-            }
-            if (pendingChoices.length < 5) {
-              pendingChoices.push({ label: 'Look around', actionId: 'look_around' });
-            }
-            if (pendingChoices.length < 5) {
-              pendingChoices.push({ label: 'Wait a while', actionId: 'wait' });
-            }
-          }
-        }
         flags['__toolCallsThisTurn'] = 0;
         operationPatch = { ...operationPatch, status: 'done', completed: now };
         output = {
           effect: 'turn_completed',
           operationStatus: 'done',
           narrating: false,
+          choicesSource: 'engine',
           pendingChoiceCount: pendingChoices.length,
         };
         break;
@@ -912,25 +910,15 @@ export const narratorTool = mutation({
 });
 
 function narratorToolLogArgs(args: {
-  tool: 'narrate' | 'npc_speak' | 'offer_choice' | 'end_turn';
+  tool: 'narrate' | 'npc_speak' | 'end_turn';
   text?: string;
   speaker?: string;
-  label?: string;
-  actionId?: string;
-  payload?: unknown;
 }) {
   if (args.tool === 'narrate') {
     return { text: args.text ?? '' };
   }
   if (args.tool === 'npc_speak') {
     return { speaker: args.speaker ?? '', text: args.text ?? '' };
-  }
-  if (args.tool === 'offer_choice') {
-    return {
-      label: args.label ?? '',
-      actionId: args.actionId ?? '',
-      payload: args.payload ?? null,
-    };
   }
   return {};
 }
@@ -944,18 +932,7 @@ export const failNarrateOp = mutation({
     const save = await ctx.db.get(op.saveId);
     if (save) {
       // Make sure the player isn't stuck.
-      const room = roomExists(save.location) ? getRoom(save.location as RoomId) : null;
-      const fallback = save.beatActive
-        ? canonicalBeatPendingChoices(save.beatActive, save)
-        : [
-            { label: 'Look around', actionId: 'look_around' },
-            ...(room?.exits ?? []).map((e) => ({
-              label: `Walk to ${getRoom(e).name}`,
-              actionId: 'move_to_room',
-              payload: { roomId: e },
-            })),
-            { label: 'Wait a while', actionId: 'wait' },
-          ].slice(0, 5);
+      const fallback = availableActions(save as any);
       await ctx.db.patch(save._id, {
         narrating: false,
         pendingChoices: fallback,

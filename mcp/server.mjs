@@ -119,14 +119,6 @@ async function callNarratorTool(name, args) {
         speaker: args.speaker,
         text: args.text,
       });
-    case 'aitown.offer_choice':
-      return await callRecordedNarratorTool('offer_choice', args, {
-        operationId: args.operationId,
-        tool: 'offer_choice',
-        label: args.label,
-        actionId: args.actionId,
-        payload: args.payload,
-      });
     case 'aitown.end_turn':
       return await callRecordedNarratorTool('end_turn', args, {
         operationId: args.operationId,
@@ -549,25 +541,9 @@ export function tools() {
       },
     },
     {
-      name: 'aitown.offer_choice',
-      description:
-        'Register a choice button the player can take next turn. actionId must be a registered scripted action. Max 5 choices per turn.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          operationId: { type: 'string' },
-          label: { type: 'string', minLength: 1, maxLength: 80 },
-          actionId: { type: 'string' },
-          payload: {},
-        },
-        required: ['operationId', 'label', 'actionId'],
-        additionalProperties: false,
-      },
-    },
-    {
       name: 'aitown.end_turn',
       description:
-        'Mark the narrator operation complete. Must be the last tool called per turn. If no choices were offered, the engine populates sensible defaults.',
+        'Mark the narrator operation complete. Must be the last tool called per turn. The engine owns the next legal choices.',
       inputSchema: {
         type: 'object',
         properties: { operationId: { type: 'string' } },
@@ -599,7 +575,6 @@ export async function callTool(name, args) {
     name === 'aitown.set_narrator_model' ||
     name === 'aitown.narrate' ||
     name === 'aitown.npc_speak' ||
-    name === 'aitown.offer_choice' ||
     name === 'aitown.end_turn' ||
     name === 'aitown.fail_narrate_op'
   ) {

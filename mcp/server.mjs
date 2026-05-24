@@ -93,6 +93,57 @@ async function waitForInput(inputId) {
   throw new Error(`Input ${inputId} was not processed within ${WAIT_FOR_INPUT_TIMEOUT_MS}ms.`);
 }
 
+async function callNarratorTool(name, args) {
+  switch (name) {
+    case 'aitown.claim_narrate_op': {
+      const op = await convexClient().mutation(api.narrative.api.claimNextNarrateOp, {});
+      return textContent(op);
+    }
+    case 'aitown.narrate':
+      return textContent(
+        await convexClient().mutation(api.narrative.api.narratorTool, {
+          operationId: args.operationId,
+          tool: 'narrate',
+          text: args.text,
+        }),
+      );
+    case 'aitown.npc_speak':
+      return textContent(
+        await convexClient().mutation(api.narrative.api.narratorTool, {
+          operationId: args.operationId,
+          tool: 'npc_speak',
+          speaker: args.speaker,
+          text: args.text,
+        }),
+      );
+    case 'aitown.offer_choice':
+      return textContent(
+        await convexClient().mutation(api.narrative.api.narratorTool, {
+          operationId: args.operationId,
+          tool: 'offer_choice',
+          label: args.label,
+          actionId: args.actionId,
+          payload: args.payload,
+        }),
+      );
+    case 'aitown.end_turn':
+      return textContent(
+        await convexClient().mutation(api.narrative.api.narratorTool, {
+          operationId: args.operationId,
+          tool: 'end_turn',
+        }),
+      );
+    case 'aitown.fail_narrate_op':
+      return textContent(
+        await convexClient().mutation(api.narrative.api.failNarrateOp, {
+          operationId: args.operationId,
+          error: args.error,
+        }),
+      );
+  }
+  throw new Error(`callNarratorTool: unknown tool ${name}`);
+}
+
 async function sendInput(worldId, name, args) {
   const status = await defaultWorldStatus();
   const targetWorldId = worldId ?? status.worldId;
@@ -419,10 +470,96 @@ export function tools() {
         additionalProperties: false,
       },
     },
+    // ----- Narrator tools (Phase 2 of the VN/MUD pivot). Pure narrative; no state mutation. -----
+    {
+      name: 'aitown.claim_narrate_op',
+      description: 'Claim the next queued narrator operation. Returns null if the queue is empty.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      name: 'aitown.narrate',
+      description:
+        'Append a narration paragraph (≤500 chars) to the current turn. Use to describe the scene, action, or sensory detail.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          operationId: { type: 'string' },
+          text: { type: 'string', minLength: 1, maxLength: 500 },
+        },
+        required: ['operationId', 'text'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.npc_speak',
+      description:
+        'Have a present NPC say a line (≤300 chars). The speaker must be listed in npcsPresent for the current scene.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          operationId: { type: 'string' },
+          speaker: { type: 'string' },
+          text: { type: 'string', minLength: 1, maxLength: 300 },
+        },
+        required: ['operationId', 'speaker', 'text'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.offer_choice',
+      description:
+        'Register a choice button the player can take next turn. actionId must be a registered scripted action. Max 5 choices per turn.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          operationId: { type: 'string' },
+          label: { type: 'string', minLength: 1, maxLength: 80 },
+          actionId: { type: 'string' },
+          payload: {},
+        },
+        required: ['operationId', 'label', 'actionId'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.end_turn',
+      description:
+        'Mark the narrator operation complete. Must be the last tool called per turn. If no choices were offered, the engine populates sensible defaults.',
+      inputSchema: {
+        type: 'object',
+        properties: { operationId: { type: 'string' } },
+        required: ['operationId'],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: 'aitown.fail_narrate_op',
+      description: 'Abort the narrator operation with an error message. Engine restores safe defaults.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          operationId: { type: 'string' },
+          error: { type: 'string' },
+        },
+        required: ['operationId', 'error'],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
 export async function callTool(name, args) {
+  // Narrator-tool path: no worldId / no engine input needed.
+  if (
+    name === 'aitown.claim_narrate_op' ||
+    name === 'aitown.narrate' ||
+    name === 'aitown.npc_speak' ||
+    name === 'aitown.offer_choice' ||
+    name === 'aitown.end_turn' ||
+    name === 'aitown.fail_narrate_op'
+  ) {
+    return await callNarratorTool(name, args);
+  }
   const needsWorld = ![
     'aitown.claim_agent_operation',
     'aitown.complete_agent_operation',

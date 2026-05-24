@@ -1304,6 +1304,25 @@ async function processOperation(operation) {
 }
 
 async function runOnce() {
+  // Prefer narrator ops (the active pivot path) over legacy agent ops.
+  const narrateText = mcpText(await serverCallTool('aitown.claim_narrate_op', {}));
+  if (narrateText && narrateText !== 'null') {
+    let parsed;
+    try {
+      parsed = JSON.parse(narrateText);
+    } catch (err) {
+      console.error(`claim_narrate_op returned non-JSON: ${narrateText}`);
+      parsed = null;
+    }
+    if (parsed) {
+      await withTimeout(
+        handleNarrateScene(parsed),
+        OPERATION_TIMEOUT_MS,
+        'handleNarrateScene',
+      );
+      return true;
+    }
+  }
   const operations = await withTimeout(
     pendingOperations(),
     CONVEX_CALL_TIMEOUT_MS,
@@ -1314,6 +1333,267 @@ async function runOnce() {
   }
   await withTimeout(processOperation(operations[0]), OPERATION_TIMEOUT_MS, 'processOperation');
   return true;
+}
+
+// ---------- Narrator tool-calling LLM loop (Phase 2 of the VN/MUD pivot) ----------
+
+const NARRATOR_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'narrate',
+      description: 'Append a narration paragraph (≤500 chars). Use to describe scene, action, or sensory detail.',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', maxLength: 500 } },
+        required: ['text'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'npc_speak',
+      description: 'Have a present NPC say a line (≤300 chars). Speaker must be in npcsPresent.',
+      parameters: {
+        type: 'object',
+        properties: {
+          speaker: { type: 'string' },
+          text: { type: 'string', maxLength: 300 },
+        },
+        required: ['speaker', 'text'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'offer_choice',
+      description:
+        'Register a button the player can press next turn. actionId must be from the registeredActions list. payload is required for move_to_room ({roomId}) and look_at ({affordanceId}).',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', maxLength: 80 },
+          actionId: { type: 'string' },
+          payload: { type: 'object', additionalProperties: true },
+        },
+        required: ['label', 'actionId'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'end_turn',
+      description: 'Mark the turn complete. Must be the LAST tool you call.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+];
+
+function narratorSystemPrompt(ctx) {
+  const npcLines = (ctx.npcVoices ?? [])
+    .map((v) => `- ${v.name} (${v.profession}): ${v.identity}`)
+    .join('\n');
+  const transcriptLines = (ctx.recentTranscript ?? [])
+    .map((e) => {
+      if (e.role === 'narrator') return `Narrator: ${e.text}`;
+      if (e.role === 'npc') return `${e.speaker}: ${e.text}`;
+      if (e.role === 'player') return `Player: ${e.text}`;
+      return `System: ${e.text}`;
+    })
+    .join('\n');
+  const affordanceLines = (ctx.affordances ?? [])
+    .map((a) => `- look_at(${a.id}) — "${a.label}"`)
+    .join('\n');
+  const exitLines = (ctx.exits ?? []).map((e) => `- move_to_room({roomId: "${e}"})`).join('\n');
+
+  const beatActive = ctx.beatId && Array.isArray(ctx.beatChoices) && ctx.beatChoices.length > 0;
+  const beatBlock = beatActive
+    ? `\n# STORY BEAT ACTIVE: ${ctx.beatId}
+A scripted story beat is now active. You MUST offer EXACTLY these choices to the player via offer_choice — no exits, no look_at, no other actions:
+${ctx.beatChoices.map((c) => `- offer_choice("${c.label}", actionId="beat_choice", payload={ beatId: "${ctx.beatId}", choiceId: "${c.id}" })`).join('\n')}
+
+Paint the scene from the briefing, optionally voice one present NPC, then offer ONLY the beat choices above, then end_turn. Do NOT add wander/look/move choices during a beat — keep the player on the story rails.`
+    : `\n# Free play (no active beat)
+Offer 2-4 choices: examine objects, talk to NPCs, move to other rooms, wait, etc.
+- For actionId="move_to_room", pass payload={"roomId": "<exit-room-id>"} from the exits list.
+- For actionId="look_at", pass payload={"affordanceId": "<id>"} from the affordances list.
+
+Exits (use actionId="move_to_room" with payload {roomId}):
+${exitLines || '(none)'}
+
+Examinables (use actionId="look_at" with payload {affordanceId}):
+${affordanceLines || '(none)'}
+
+Other registered actions: look_around, wait, free_text.`;
+
+  return `You are the NARRATOR of a turn-based text adventure called "New Dawn Pastures", a cozy LitRPG about Kyle Farmer inheriting his late grandfather's farm in Willow Creek.
+
+# Your role
+Paint the scene. Voice the NPCs present. Offer the player meaningful choices. You DO NOT control the world — every state change (items, hearts, clock, room moves) happens outside your tool surface.
+
+# Hard rules
+- You MUST call \`end_turn\` exactly once as your LAST tool call.
+- You SHOULD call \`narrate\` at least once to describe the result of the player's last action.
+- If NPCs are present, voice at most one or two of them with short, in-character lines.
+- DO NOT invent NPCs not in npcsPresent. DO NOT invent items, rooms, or affordances not in the lists below.
+- Keep narration tight — 1-3 short sentences per \`narrate\` call. Cozy, sensory, slightly melancholy LitRPG voice. NO markdown, NO meta-commentary.
+
+# Scene state
+- Day ${ctx.day}, time of day: ${ctx.timeOfDay}
+- Room: ${ctx.roomName} (id=${ctx.location})
+- Room description: ${ctx.roomDescription}
+- NPCs present: ${(ctx.npcsPresent ?? []).join(', ') || '(none)'}
+${npcLines ? `\n# NPC voices\n${npcLines}\n` : ''}${beatBlock}
+
+# Briefing for this turn
+${ctx.briefing ?? ''}
+
+${ctx.freeText ? `\n# Player free text\nThe player typed: "${ctx.freeText}". Respond in-character.` : ''}
+
+# Recent transcript
+${transcriptLines || '(none yet)'}
+
+Begin. Call tools.`;
+}
+
+async function llmTools(messages, tools, { temperature = 0.7 } = {}) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: OPENAI_CHAT_MODEL,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      parallel_tool_calls: false,
+      temperature,
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`OpenAI chat (tools) failed ${response.status}: ${await response.text()}`);
+  }
+  return await response.json();
+}
+
+async function handleNarrateScene(op) {
+  const { operationId, context } = op;
+  const budget = context?.toolBudget ?? 8;
+  const messages = [
+    { role: 'system', content: narratorSystemPrompt(context) },
+    {
+      role: 'user',
+      content:
+        'Narrate the result of the player\'s last action, optionally voice an NPC, then offer 2-4 choices, then call end_turn.',
+    },
+  ];
+
+  let calls = 0;
+  let ended = false;
+  while (!ended && calls < budget + 4 /* a little headroom for malformed loops */) {
+    let resp;
+    try {
+      resp = await llmTools(messages, NARRATOR_TOOLS);
+    } catch (err) {
+      await serverCallTool('aitown.fail_narrate_op', {
+        operationId,
+        error: String(err.message || err),
+      });
+      return;
+    }
+    const choice = resp.choices?.[0];
+    const message = choice?.message;
+    if (!message) {
+      await serverCallTool('aitown.fail_narrate_op', {
+        operationId,
+        error: 'LLM returned no message',
+      });
+      return;
+    }
+    messages.push(message);
+    const toolCalls = message.tool_calls ?? [];
+    if (toolCalls.length === 0) {
+      // Force end_turn if the model went off-script.
+      await serverCallTool('aitown.end_turn', { operationId });
+      ended = true;
+      break;
+    }
+    for (const tc of toolCalls) {
+      const name = tc.function?.name;
+      let args = {};
+      try {
+        args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
+      } catch (err) {
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: `error: invalid JSON arguments: ${String(err)}`,
+        });
+        continue;
+      }
+      try {
+        if (name === 'narrate') {
+          await serverCallTool('aitown.narrate', { operationId, text: args.text });
+        } else if (name === 'npc_speak') {
+          await serverCallTool('aitown.npc_speak', {
+            operationId,
+            speaker: args.speaker,
+            text: args.text,
+          });
+        } else if (name === 'offer_choice') {
+          await serverCallTool('aitown.offer_choice', {
+            operationId,
+            label: args.label,
+            actionId: args.actionId,
+            payload: args.payload,
+          });
+        } else if (name === 'end_turn') {
+          await serverCallTool('aitown.end_turn', { operationId });
+          ended = true;
+        } else {
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: `error: unknown tool ${name}`,
+          });
+          continue;
+        }
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: 'ok' });
+        calls += 1;
+      } catch (err) {
+        // Tool-side validation error (e.g. invalid speaker). Tell the LLM so it can retry.
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: `error: ${String(err.message || err)}`,
+        });
+      }
+    }
+    if (calls >= budget && !ended) {
+      // Force end_turn to honor the budget.
+      try {
+        await serverCallTool('aitown.end_turn', { operationId });
+      } catch {
+        /* already ended */
+      }
+      ended = true;
+    }
+  }
+  if (!ended) {
+    try {
+      await serverCallTool('aitown.end_turn', { operationId });
+    } catch {
+      /* already ended */
+    }
+  }
 }
 
 async function main() {

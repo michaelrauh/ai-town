@@ -1315,11 +1315,7 @@ async function runOnce() {
       parsed = null;
     }
     if (parsed) {
-      await withTimeout(
-        handleNarrateScene(parsed),
-        OPERATION_TIMEOUT_MS,
-        'handleNarrateScene',
-      );
+      await withTimeout(handleNarrateScene(parsed), OPERATION_TIMEOUT_MS, 'handleNarrateScene');
       return true;
     }
   }
@@ -1342,7 +1338,8 @@ const NARRATOR_TOOLS = [
     type: 'function',
     function: {
       name: 'narrate',
-      description: 'Append a narration paragraph (≤500 chars). Use to describe scene, action, or sensory detail.',
+      description:
+        'Append a narration paragraph (≤500 chars). Use to describe scene, action, or sensory detail.',
       parameters: {
         type: 'object',
         properties: { text: { type: 'string', maxLength: 500 } },
@@ -1484,15 +1481,24 @@ async function llmTools(messages, tools, { temperature = 0.7 } = {}) {
   return await response.json();
 }
 
+async function recordNarratorModel(operationId, model) {
+  try {
+    await serverCallTool('aitown.set_narrator_model', { operationId, model });
+  } catch (err) {
+    console.warn(`Failed to record narrator model: ${String(err.message || err)}`);
+  }
+}
+
 async function handleNarrateScene(op) {
   const { operationId, context } = op;
   const budget = context?.toolBudget ?? 8;
+  await recordNarratorModel(operationId, OPENAI_CHAT_MODEL);
   const messages = [
     { role: 'system', content: narratorSystemPrompt(context) },
     {
       role: 'user',
       content:
-        'Narrate the result of the player\'s last action, optionally voice an NPC, then offer 2-4 choices, then call end_turn.',
+        "Narrate the result of the player's last action, optionally voice an NPC, then offer 2-4 choices, then call end_turn.",
     },
   ];
 
@@ -1502,6 +1508,9 @@ async function handleNarrateScene(op) {
     let resp;
     try {
       resp = await llmTools(messages, NARRATOR_TOOLS);
+      if (resp.model && resp.model !== OPENAI_CHAT_MODEL) {
+        await recordNarratorModel(operationId, resp.model);
+      }
     } catch (err) {
       await serverCallTool('aitown.fail_narrate_op', {
         operationId,

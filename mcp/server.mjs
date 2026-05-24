@@ -99,40 +99,39 @@ async function callNarratorTool(name, args) {
       const op = await convexClient().mutation(api.narrative.api.claimNextNarrateOp, {});
       return textContent(op);
     }
+    case 'aitown.set_narrator_model':
+      return textContent(
+        await convexClient().mutation(api.narrative.api.setNarratorModel, {
+          operationId: args.operationId,
+          model: args.model,
+        }),
+      );
     case 'aitown.narrate':
-      return textContent(
-        await convexClient().mutation(api.narrative.api.narratorTool, {
-          operationId: args.operationId,
-          tool: 'narrate',
-          text: args.text,
-        }),
-      );
+      return await callRecordedNarratorTool('narrate', args, {
+        operationId: args.operationId,
+        tool: 'narrate',
+        text: args.text,
+      });
     case 'aitown.npc_speak':
-      return textContent(
-        await convexClient().mutation(api.narrative.api.narratorTool, {
-          operationId: args.operationId,
-          tool: 'npc_speak',
-          speaker: args.speaker,
-          text: args.text,
-        }),
-      );
+      return await callRecordedNarratorTool('npc_speak', args, {
+        operationId: args.operationId,
+        tool: 'npc_speak',
+        speaker: args.speaker,
+        text: args.text,
+      });
     case 'aitown.offer_choice':
-      return textContent(
-        await convexClient().mutation(api.narrative.api.narratorTool, {
-          operationId: args.operationId,
-          tool: 'offer_choice',
-          label: args.label,
-          actionId: args.actionId,
-          payload: args.payload,
-        }),
-      );
+      return await callRecordedNarratorTool('offer_choice', args, {
+        operationId: args.operationId,
+        tool: 'offer_choice',
+        label: args.label,
+        actionId: args.actionId,
+        payload: args.payload,
+      });
     case 'aitown.end_turn':
-      return textContent(
-        await convexClient().mutation(api.narrative.api.narratorTool, {
-          operationId: args.operationId,
-          tool: 'end_turn',
-        }),
-      );
+      return await callRecordedNarratorTool('end_turn', args, {
+        operationId: args.operationId,
+        tool: 'end_turn',
+      });
     case 'aitown.fail_narrate_op':
       return textContent(
         await convexClient().mutation(api.narrative.api.failNarrateOp, {
@@ -142,6 +141,29 @@ async function callNarratorTool(name, args) {
       );
   }
   throw new Error(`callNarratorTool: unknown tool ${name}`);
+}
+
+async function callRecordedNarratorTool(tool, originalArgs, mutationArgs) {
+  try {
+    return textContent(await convexClient().mutation(api.narrative.api.narratorTool, mutationArgs));
+  } catch (err) {
+    await recordNarratorToolFailure(tool, originalArgs, err);
+    throw err;
+  }
+}
+
+async function recordNarratorToolFailure(tool, args, err) {
+  if (!args?.operationId) return;
+  try {
+    await convexClient().mutation(api.narrative.api.recordNarratorToolFailure, {
+      operationId: args.operationId,
+      tool,
+      args: safeJson(args),
+      error: String(err?.message || err),
+    });
+  } catch {
+    // Preserve the original tool error for the runner retry loop.
+  }
 }
 
 async function sendInput(worldId, name, args) {
@@ -429,7 +451,15 @@ export function tools() {
                   priority: { type: 'number' },
                   target: { type: 'object' },
                 },
-                required: ['kind', 'description', 'rationale', 'source', 'created', 'expiresAt', 'priority'],
+                required: [
+                  'kind',
+                  'description',
+                  'rationale',
+                  'source',
+                  'created',
+                  'expiresAt',
+                  'priority',
+                ],
                 additionalProperties: true,
               },
               { type: 'null' },
@@ -475,6 +505,19 @@ export function tools() {
       name: 'aitown.claim_narrate_op',
       description: 'Claim the next queued narrator operation. Returns null if the queue is empty.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
+      name: 'aitown.set_narrator_model',
+      description: 'Record the model currently handling a narrator operation for the UI inspector.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          operationId: { type: 'string' },
+          model: { type: 'string' },
+        },
+        required: ['operationId', 'model'],
+        additionalProperties: false,
+      },
     },
     {
       name: 'aitown.narrate',
@@ -534,7 +577,8 @@ export function tools() {
     },
     {
       name: 'aitown.fail_narrate_op',
-      description: 'Abort the narrator operation with an error message. Engine restores safe defaults.',
+      description:
+        'Abort the narrator operation with an error message. Engine restores safe defaults.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -552,6 +596,7 @@ export async function callTool(name, args) {
   // Narrator-tool path: no worldId / no engine input needed.
   if (
     name === 'aitown.claim_narrate_op' ||
+    name === 'aitown.set_narrator_model' ||
     name === 'aitown.narrate' ||
     name === 'aitown.npc_speak' ||
     name === 'aitown.offer_choice' ||

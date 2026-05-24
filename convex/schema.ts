@@ -45,11 +45,17 @@ export default defineSchema({
   narrativeOperations: defineTable({
     saveId: v.id('narrativeState'),
     turn: v.number(),
-    status: v.union(v.literal('queued'), v.literal('inProgress'), v.literal('done'), v.literal('failed')),
+    status: v.union(
+      v.literal('queued'),
+      v.literal('inProgress'),
+      v.literal('done'),
+      v.literal('failed'),
+    ),
     context: v.any(),
     created: v.number(),
     completed: v.optional(v.number()),
     error: v.optional(v.string()),
+    model: v.optional(v.string()),
     // Inspector fields (Level 1) -- all optional, populated as we go.
     actionId: v.optional(v.string()),
     actionLabel: v.optional(v.string()),
@@ -62,6 +68,7 @@ export default defineSchema({
         v.object({
           tool: v.string(),
           args: v.any(),
+          output: v.optional(v.any()),
           at: v.number(),
           ok: v.boolean(),
           error: v.optional(v.string()),

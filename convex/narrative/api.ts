@@ -5,7 +5,7 @@ import { getAction } from './actions';
 import { getBeat, listBeats } from './beats';
 import { selectBeat } from './triggers';
 import { getRoom, npcsInRoom, roomExists, type RoomId } from './rooms';
-import { Descriptions } from '../../data/characters';
+import { Descriptions } from './voiceCards';
 
 const DEFAULT_SLOT = 'default';
 
@@ -518,12 +518,13 @@ export const startGame = mutation({
     // Fire the trigger evaluator on the fresh state so Beat 1 can open immediately.
     const beat = selectBeat(initial as any);
     let briefing =
-      "Kyle Farmer has just arrived at his late grandfather's cottage in Willow Creek. Open the scene briefly.";
+      "Kyle Farmer is seated in a Detroit lawyer's office with his late grandfather's inheritance papers in front of him. Open the signing scene briefly.";
     if (beat) {
       initial.beatActive = beat.id;
       briefing = beat.openingBriefing(initial as any);
     }
-    initial.pendingChoices = availableActions(initial);
+    // pendingChoices stays [] until narrator's end_turn populates them, so
+    // beat-locked buttons can't appear before the opening narration paints.
 
     let saveId;
     if (existing) {
@@ -536,6 +537,7 @@ export const startGame = mutation({
       reason: 'open_game',
       briefing,
       beatId: beat?.id ?? null,
+      evaluateBeatsAfterEnd: true,
     });
     return saveId;
   },
@@ -636,24 +638,18 @@ export const submitAction = mutation({
       working.transcript = [...working.transcript, ...result.preNarratorTranscript];
     }
 
-    // ----- Trigger evaluation. Did a new beat open after this action? -----
-    // The trigger selector returns one beat, so a single player action cannot cascade
-    // through multiple beats in the same turn.
-    let briefing = result.narratorBriefing;
-    let activeBeatId: string | null = working.beatActive;
-    if (working.beatActive) {
-      activeBeatId = working.beatActive;
-    } else {
-      const next = selectBeat(working);
-      if (next) {
-        working.beatActive = next.id;
-        activeBeatId = next.id;
-        // The narrator paints the action result THEN the new beat opens. Stack briefings.
-        briefing = `${briefing}\n\nA new beat opens: ${next.openingBriefing(working)}`;
-      }
-    }
+    // NOTE: we deliberately do NOT call selectBeat here. Bundling the action's
+    // result and a newly-opened beat into a single narrator turn caused
+    // "state-ahead-of-presentation" bugs where the LLM only painted one half and
+    // the beat's locked choices appeared before its intro. Trigger evaluation is
+    // now deferred to narratorTool's end_turn handler (with evaluateBeatsAfterEnd
+    // below) so a new beat opens in its own narrator turn.
+    const briefing = result.narratorBriefing;
+    const activeBeatId: string | null = working.beatActive;
 
-    working.pendingChoices = availableActions(working);
+    // Keep the choice slate empty while narration is in flight. The end_turn
+    // handler will populate it once narration (and any cascade) lands.
+    working.pendingChoices = [];
     const stateAfter = inspectorStateSnapshot(working);
 
     await ctx.db.replace(save._id, working as any);
@@ -667,6 +663,7 @@ export const submitAction = mutation({
       briefing,
       freeText: args.freeText ?? null,
       beatId: activeBeatId,
+      evaluateBeatsAfterEnd: true,
       stateBefore,
       stateAfter,
       stateDelta: stateDelta(stateBefore, stateAfter),
@@ -826,7 +823,6 @@ export const narratorTool = mutation({
 
     const now = Date.now();
     const transcript = save.transcript.slice();
-    const pendingChoices = availableActions(save as any);
     const flags = { ...save.flags };
 
     let output: Record<string, unknown> = {};
@@ -871,13 +867,7 @@ export const narratorTool = mutation({
       case 'end_turn': {
         flags['__toolCallsThisTurn'] = 0;
         operationPatch = { ...operationPatch, status: 'done', completed: now };
-        output = {
-          effect: 'turn_completed',
-          operationStatus: 'done',
-          narrating: false,
-          choicesSource: 'engine',
-          pendingChoiceCount: pendingChoices.length,
-        };
+        // end_turn output is finalized below after the cascade decision.
         break;
       }
     }
@@ -896,12 +886,99 @@ export const narratorTool = mutation({
       ],
     };
 
-    await ctx.db.patch(op._id, operationPatch);
+    // For non-end_turn tools, patch the transcript and stay narrating.
+    if (args.tool !== 'end_turn') {
+      await ctx.db.patch(op._id, operationPatch);
+      await ctx.db.patch(save._id, {
+        transcript,
+        flags,
+        narrating: true,
+        updatedAt: now,
+      });
+      return { ok: true };
+    }
+
+    // ===== end_turn cascade =====
+    // The action's (or prior beat's) narration just finished. Decide whether a
+    // *new* beat should open in its own narrator turn (to avoid bundling).
+    const evaluate = Boolean((op.context as any)?.evaluateBeatsAfterEnd);
+    const postNarrationState = { ...save, transcript, flags } as any;
+    const nextBeat = evaluate ? selectBeat(postNarrationState) : null;
+
+    if (nextBeat) {
+      // Cascade: stage the beat, keep narrating, enqueue a second op.
+      const stagedState = { ...postNarrationState, beatActive: nextBeat.id };
+      const cascadeBriefing = nextBeat.openingBriefing(stagedState);
+      const endTurnOutput = {
+        effect: 'turn_completed',
+        operationStatus: 'done',
+        narrating: true,
+        choicesSource: 'cascade-pending',
+        cascadeBeatId: nextBeat.id,
+      };
+      await ctx.db.patch(op._id, {
+        status: 'done',
+        completed: now,
+        toolCalls: [
+          ...(op.toolCalls ?? []),
+          {
+            tool: args.tool,
+            args: narratorToolLogArgs(args),
+            output: endTurnOutput,
+            at: now,
+            ok: true,
+          },
+        ],
+      });
+      await ctx.db.patch(save._id, {
+        transcript,
+        flags,
+        beatActive: nextBeat.id,
+        pendingChoices: [],
+        narrating: true,
+        updatedAt: now,
+      });
+      const stagedSave = (await ctx.db.get(save._id)) as any;
+      await enqueueNarratorOp(ctx, save._id, save.turn + 1, {
+        reason: 'beat_opening_cascade',
+        briefing: cascadeBriefing,
+        beatId: nextBeat.id,
+        evaluateBeatsAfterEnd: true,
+        stateBefore: inspectorStateSnapshot(postNarrationState),
+        stateAfter: inspectorStateSnapshot(stagedSave),
+      });
+      return { ok: true };
+    }
+
+    // No cascade: standard end_turn flow — compute the final choice slate from
+    // current state and release the narrating lock.
+    const pendingChoices = availableActions(postNarrationState);
+    const endTurnOutput = {
+      effect: 'turn_completed',
+      operationStatus: 'done',
+      narrating: false,
+      choicesSource: 'engine',
+      pendingChoiceCount: pendingChoices.length,
+    };
+    await ctx.db.patch(op._id, {
+      status: 'done',
+      completed: now,
+      toolCalls: [
+        ...(op.toolCalls ?? []),
+        {
+          tool: args.tool,
+          args: narratorToolLogArgs(args),
+          output: endTurnOutput,
+          at: now,
+          ok: true,
+        },
+      ],
+    });
     await ctx.db.patch(save._id, {
       transcript,
       pendingChoices,
       flags,
-      narrating: args.tool !== 'end_turn',
+      narrating: false,
       updatedAt: now,
     });
 

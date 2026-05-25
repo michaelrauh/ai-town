@@ -16,8 +16,18 @@ function setFlag(state: any, key: string, value: boolean | string | number) {
 
 function giveItem(
   state: any,
-  item: { itemId: string; name: string; emoji?: string; tags?: string[]; sellPrice?: number; description?: string },
+  item: {
+    itemId: string;
+    name: string;
+    emoji?: string;
+    tags?: string[];
+    sellPrice?: number;
+    description?: string;
+  },
 ) {
+  if (state.inventory.some((existing: { itemId?: string }) => existing.itemId === item.itemId)) {
+    return;
+  }
   state.inventory.push({
     itemId: item.itemId,
     name: item.name,
@@ -25,6 +35,33 @@ function giveItem(
     emoji: item.emoji,
     tags: item.tags ?? [],
     sellPrice: item.sellPrice,
+  });
+}
+
+function giveStartingKit(state: any) {
+  giveItem(state, {
+    itemId: 'hoe',
+    name: 'Hoe',
+    description: "Grandfather's old hoe.",
+    emoji: '🪓',
+    tags: ['tool', 'farm'],
+    sellPrice: 6,
+  });
+  giveItem(state, {
+    itemId: 'taskbook',
+    name: 'Taskbook',
+    description: 'Where formal Tasks are recorded.',
+    emoji: '📒',
+    tags: ['paper', 'curio'],
+    sellPrice: 0,
+  });
+  giveItem(state, {
+    itemId: 'journal',
+    name: 'Journal',
+    description: "Kyle's personal journal.",
+    emoji: '📓',
+    tags: ['paper', 'curio'],
+    sellPrice: 4,
   });
 }
 
@@ -44,6 +81,7 @@ const lawyersOffice: Beat = {
   ],
   resolve: (state, choiceId) => {
     setFlag(state, 'inheritanceSigned', true);
+    state.location = 'kyle-field';
     if (choiceId === 'hesitate') {
       return "Kyle stares at the page for a long beat. Then he signs anyway — there's nothing left for him in Detroit. The ink dries. He stands and steps out onto the crosswalk.";
     }
@@ -76,8 +114,7 @@ const arrival: Beat = {
 const acceptTask: Beat = {
   id: 'accept-task',
   priority: 100,
-  preconditions: (s) =>
-    hasFlag(s, 'mayorMet') && !s.beatsCompleted.includes('accept-task'),
+  preconditions: (s) => hasFlag(s, 'mayorMet') && !s.beatsCompleted.includes('accept-task'),
   openingBriefing: () =>
     "The Mayor produces a small magical-looking Task book and clears his throat formally. 'I, as Mayor of Willow Creek, formally offer you a Task: Fix Up the Forgotten Farm.' His monocle gleams. 'Yes or no, Kyle Farmer. Tasks are binding once accepted.'",
   choices: () => [
@@ -85,6 +122,8 @@ const acceptTask: Beat = {
     { id: 'no', label: 'NO — refuse' },
   ],
   resolve: (state, choiceId) => {
+    state.location = 'kyle-cottage';
+    giveStartingKit(state);
     if (choiceId === 'no') {
       // Soft barrier — the player will be offered again. We mark NOTHING completed, but
       // we DO set a flag the next opening will reference.
@@ -110,7 +149,7 @@ const firstNight: Beat = {
     s.location === 'kyle-cottage' &&
     !s.beatsCompleted.includes('first-night'),
   openingBriefing: () =>
-    "The sun is setting fast. Inside the cottage Kyle finds a small bed, a nightstand with the blank blue journal, the trunk, an old TV in the corner. The Taskbook in the knapsack already has his name on the first page. He is exhausted.",
+    'The sun is setting fast. Inside the cottage Kyle finds a small bed, a nightstand with the blank blue journal, the trunk, an old TV in the corner. The Taskbook in the knapsack already has his name on the first page. He is exhausted.',
   choices: () => [
     { id: 'sleep', label: 'Go to sleep' },
     { id: 'write', label: 'Write in the journal first' },
@@ -143,7 +182,7 @@ const morningChores: Beat = {
     "Kyle is barely outside the cottage when a burly, jovial man with a stubbled chin and enormous arms strides up. 'You must be Kyle! Harold. I knew your grandfather — buy his produce, used to. Pour his drinks too.' He sets down a watering can, a small pouch of poor turnip seeds, and a bundle of thistles. 'These were on the books from your grandpa. They're yours.'",
   choices: () => [
     { id: 'thank', label: 'Thank Harold warmly' },
-    { id: 'questions', label: "Ask Harold about Grandpa" },
+    { id: 'questions', label: 'Ask Harold about Grandpa' },
     { id: 'work', label: 'Get straight to work' },
   ],
   resolve: (state, choiceId) => {
@@ -183,7 +222,7 @@ const rescueElvira: Beat = {
     s.location === 'kyle-field' &&
     !s.beatsCompleted.includes('rescue-elvira'),
   openingBriefing: () =>
-    "Out in the weeds, Kyle hears thrashing. Something is tangled — a huge dog, beagle-faced but Irish wolfhound-tall, completely snarled in brambles, exhausted. It looks at Kyle with enormous wet eyes.",
+    'Out in the weeds, Kyle hears thrashing. Something is tangled — a huge dog, beagle-faced but Irish wolfhound-tall, completely snarled in brambles, exhausted. It looks at Kyle with enormous wet eyes.',
   choices: () => [
     { id: 'free', label: 'Carefully free the dog' },
     { id: 'ignore', label: 'Step around, keep working' },
@@ -209,7 +248,7 @@ const townVisit: Beat = {
     s.location === 'town-square' &&
     !s.beatsCompleted.includes('town-visit'),
   openingBriefing: () =>
-    "The town square is pretty in a sad way. Pastel cobbles, some crooked. The great willow tree at the center is sparsely bloomed and brown-spotted. A blue ice cream cart sits to one side, manned by a young man with big watchful eyes — Milo. A white-haired woman in blue robes — Laurel — kneels at a shattered statue pedestal under the willow, meditating. Her glare when Kyle approaches is icy.",
+    'The town square is pretty in a sad way. Pastel cobbles, some crooked. The great willow tree at the center is sparsely bloomed and brown-spotted. A blue ice cream cart sits to one side, manned by a young man with big watchful eyes — Milo. A white-haired woman in blue robes — Laurel — kneels at a shattered statue pedestal under the willow, meditating. Her glare when Kyle approaches is icy.',
   choices: () => [
     { id: 'milo', label: 'Buy a cone from Milo' },
     { id: 'laurel', label: 'Approach Laurel anyway' },
@@ -248,11 +287,11 @@ const mushroomMistake: Beat = {
     if (choiceId === 'red') {
       setFlag(state, 'mushroomPoisoned', true);
       bumpHeart(state, 'Laurel', 2); // She saves him — relationship +.
-      return "Within minutes Kyle is on his knees, sweating cold. Elvira bays. Somehow Laurel is there — running up the path, robes flying — pouring something bitter down his throat. The world comes back. She does not speak. She does not need to.";
+      return 'Within minutes Kyle is on his knees, sweating cold. Elvira bays. Somehow Laurel is there — running up the path, robes flying — pouring something bitter down his throat. The world comes back. She does not speak. She does not need to.';
     }
     if (choiceId === 'green') {
       bumpHeart(state, 'Elvira' as any, 1);
-      return "Kyle eats a green mushroom. Earthy. Not bad. Elvira watches him with what feels like satisfaction. He pockets a few more for later.";
+      return 'Kyle eats a green mushroom. Earthy. Not bad. Elvira watches him with what feels like satisfaction. He pockets a few more for later.';
     }
     giveItem(state, {
       itemId: 'spring-berries',
@@ -276,7 +315,7 @@ const eveningAtInn: Beat = {
     s.timeOfDay !== 'morning' &&
     !s.beatsCompleted.includes('evening-at-inn'),
   openingBriefing: () =>
-    "The inn is warm and a little rowdy. Harold pours from behind the bar. A brunette woman in a leather jacket — Collette — leans on the counter and gives Kyle a sardonic once-over. The Mayor is at a corner table and waves him over. The stew Harold sets down is exactly — exactly — the stew Kyle remembers from twenty years ago.",
+    'The inn is warm and a little rowdy. Harold pours from behind the bar. A brunette woman in a leather jacket — Collette — leans on the counter and gives Kyle a sardonic once-over. The Mayor is at a corner table and waves him over. The stew Harold sets down is exactly — exactly — the stew Kyle remembers from twenty years ago.',
   choices: () => [
     { id: 'stew', label: 'Eat the stew and listen to the Mayor' },
     { id: 'ask', label: 'Ask the Mayor what happened to the statue' },
@@ -325,7 +364,7 @@ const firstHarvest: Beat = {
         emoji: '🥬',
         tags: ['food', 'vegetable'],
         sellPrice: 18,
-        description: 'Kyle\'s first crop. Small but real.',
+        description: "Kyle's first crop. Small but real.",
       });
       return "Kyle pockets the turnips. Not much, but it's his.";
     }

@@ -1,6 +1,7 @@
 import type { TimeOfDay } from './state';
 
 export type RoomId =
+  | 'lawyers-office'
   | 'kyle-cottage'
   | 'kyle-field'
   | 'town-square'
@@ -20,6 +21,21 @@ export type Room = {
 };
 
 export const rooms: Record<RoomId, Room> = {
+  'lawyers-office': {
+    id: 'lawyers-office',
+    name: "Lawyer's Office",
+    description:
+      "A sterile Detroit lawyer's office with leather chairs, a polished table, and a stack of inheritance papers waiting for Kyle Farmer's signature.",
+    exits: [],
+    affordances: [
+      {
+        id: 'read-inheritance-papers',
+        label: 'Read the inheritance papers',
+        briefing:
+          "The papers name Kyle as heir to his late grandfather's farm in Willow Creek. The signature line waits at the bottom.",
+      },
+    ],
+  },
   'kyle-cottage': {
     id: 'kyle-cottage',
     name: "Kyle's Cottage",
@@ -89,8 +105,7 @@ export const rooms: Record<RoomId, Room> = {
       {
         id: 'rest-under-willow',
         label: 'Sit under the willow',
-        briefing:
-          'Kyle settles under the great willow. Even sickly, it gives shade. He breathes.',
+        briefing: 'Kyle settles under the great willow. Even sickly, it gives shade. He breathes.',
       },
     ],
   },

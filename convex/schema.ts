@@ -1,43 +1,8 @@
 import { defineSchema, defineTable } from 'convex/server';
 import { v } from 'convex/values';
-import { agentTables } from './agent/schema';
-import { aiTownTables } from './aiTown/schema';
-import { conversationId, playerId } from './aiTown/ids';
-import { engineTables } from './engine/schema';
 import { narrativeStateFields } from './narrative/state';
 
 export default defineSchema({
-  music: defineTable({
-    storageId: v.string(),
-    type: v.union(v.literal('background'), v.literal('player')),
-  }),
-
-  messages: defineTable({
-    conversationId,
-    messageUuid: v.string(),
-    author: playerId,
-    text: v.string(),
-    worldId: v.optional(v.id('worlds')),
-  })
-    .index('conversationId', ['worldId', 'conversationId'])
-    .index('messageUuid', ['conversationId', 'messageUuid']),
-
-  runnerControl: defineTable({
-    paused: v.boolean(),
-  }),
-
-  gameSaves: defineTable({
-    slot: v.string(),
-    storageId: v.string(),
-    savedAt: v.number(),
-  }).index('slot', ['slot']),
-
-  worldFlags: defineTable({
-    worldId: v.id('worlds'),
-    name: v.string(),
-    value: v.any(),
-  }).index('worldId_name', ['worldId', 'name']),
-
   // Narrative pivot: a single save per slot (e.g. 'default'), holding the entire game state.
   narrativeState: defineTable(narrativeStateFields).index('slot', ['slot']),
 
@@ -79,8 +44,4 @@ export default defineSchema({
     .index('status_created', ['status', 'created'])
     .index('saveId', ['saveId'])
     .index('saveId_turn', ['saveId', 'turn']),
-
-  ...agentTables,
-  ...aiTownTables,
-  ...engineTables,
 });

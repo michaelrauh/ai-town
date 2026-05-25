@@ -1,5 +1,18 @@
 import { Infer, v } from 'convex/values';
-import { inventoryItem } from '../aiTown/inventory';
+
+// ---------- Inventory item ----------
+// (Inlined from convex/aiTown/inventory.ts; that module was deleted in the dead-code prune.)
+
+export const inventoryItem = v.object({
+  itemId: v.string(),
+  name: v.string(),
+  description: v.optional(v.string()),
+  emoji: v.optional(v.string()),
+  tags: v.array(v.string()),
+  sellPrice: v.optional(v.number()),
+  sourceObjectRef: v.optional(v.string()),
+});
+export type InventoryItem = Infer<typeof inventoryItem>;
 
 // ---------- Constants ----------
 
@@ -17,12 +30,7 @@ export const NARRATOR_TOOL_BUDGET = 8;
 // ---------- Transcript ----------
 
 export const transcriptEntry = v.object({
-  role: v.union(
-    v.literal('narrator'),
-    v.literal('player'),
-    v.literal('npc'),
-    v.literal('system'),
-  ),
+  role: v.union(v.literal('narrator'), v.literal('player'), v.literal('npc'), v.literal('system')),
   speaker: v.optional(v.string()), // NPC id for npc lines
   text: v.string(),
   turn: v.number(),
@@ -116,34 +124,9 @@ export function makeInitialState(now: number, slot: string): Omit<NarrativeState
     day: 1,
     timeOfDay: 'morning',
     clockMinutes: 8 * 60, // 8:00 AM
-    location: 'kyle-cottage',
+    location: 'lawyers-office',
     coins: 200,
-    inventory: [
-      {
-        itemId: 'hoe',
-        name: 'Hoe',
-        description: "Grandfather's old hoe.",
-        emoji: '🪓',
-        tags: ['tool', 'farm'],
-        sellPrice: 6,
-      },
-      {
-        itemId: 'taskbook',
-        name: 'Taskbook',
-        description: 'Where formal Tasks are recorded.',
-        emoji: '📒',
-        tags: ['paper', 'curio'],
-        sellPrice: 0,
-      },
-      {
-        itemId: 'journal',
-        name: 'Journal',
-        description: "Kyle's personal journal.",
-        emoji: '📓',
-        tags: ['paper', 'curio'],
-        sellPrice: 4,
-      },
-    ],
+    inventory: [],
     hearts: {},
     beatsCompleted: [],
     beatActive: null,
@@ -151,16 +134,12 @@ export function makeInitialState(now: number, slot: string): Omit<NarrativeState
     transcript: [
       {
         role: 'system',
-        text: "Kyle Farmer's story begins. You stand in your late grandfather's cottage in Willow Creek.",
+        text: "Kyle Farmer's story begins in a Detroit lawyer's office, with his late grandfather's inheritance papers waiting on the table.",
         turn: 0,
         at: now,
       },
     ],
-    pendingChoices: [
-      { label: 'Look around the cottage', actionId: 'stub_look' },
-      { label: 'Sleep', actionId: 'stub_sleep' },
-      { label: 'Step outside', actionId: 'stub_leave' },
-    ],
+    pendingChoices: [],
     turn: 0,
     narrating: false,
     createdAt: now,

@@ -3,6 +3,10 @@ import type { NarrativeStateDoc } from './state';
 /** A scripted story beat. */
 export type Beat = {
   id: string;
+  /** Short display name shown in the inspector and taskbook (e.g. 'First Night'). */
+  title: string;
+  /** One-sentence player objective shown in the taskbook while this beat is active. */
+  objective: string;
   /** Higher = preferred when multiple beats match. */
   priority: number;
   /** Does this beat want to fire now? */

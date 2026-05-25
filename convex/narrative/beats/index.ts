@@ -71,6 +71,8 @@ function giveStartingKit(state: any) {
 
 const lawyersOffice: Beat = {
   id: 'lawyers-office',
+  title: 'Inheritance Papers',
+  objective: 'Decide what Kyle does with the inheritance papers.',
   priority: 100,
   preconditions: (s) => s.turn === 0 && s.day === 1,
   openingBriefing: () =>
@@ -91,6 +93,8 @@ const lawyersOffice: Beat = {
 
 const arrival: Beat = {
   id: 'arrival',
+  title: 'Arrival in Willow Creek',
+  objective: 'Choose how Kyle answers the Mayor.',
   priority: 100,
   preconditions: (s) => hasFlag(s, 'inheritanceSigned') && !s.beatsCompleted.includes('arrival'),
   openingBriefing: () =>
@@ -113,6 +117,8 @@ const arrival: Beat = {
 
 const acceptTask: Beat = {
   id: 'accept-task',
+  title: 'Fix Up the Forgotten Farm',
+  objective: "Respond to the Mayor's formal Task offer.",
   priority: 100,
   preconditions: (s) => hasFlag(s, 'mayorMet') && !s.beatsCompleted.includes('accept-task'),
   openingBriefing: () =>
@@ -143,6 +149,8 @@ const acceptTask: Beat = {
 
 const firstNight: Beat = {
   id: 'first-night',
+  title: 'First Night',
+  objective: "Get Kyle through his first night in Grandfather's cottage.",
   priority: 90,
   preconditions: (s) =>
     hasFlag(s, 'mainTaskAccepted') &&
@@ -173,6 +181,8 @@ const firstNight: Beat = {
 
 const morningChores: Beat = {
   id: 'morning-chores',
+  title: 'Harold at the Farm',
+  objective: "Receive Harold's farm supplies.",
   priority: 90,
   preconditions: (s) =>
     s.day === 2 &&
@@ -215,6 +225,8 @@ const morningChores: Beat = {
 
 const rescueElvira: Beat = {
   id: 'rescue-elvira',
+  title: 'A Noise in the Brambles',
+  objective: 'Deal with the thrashing in the brambles.',
   priority: 85,
   preconditions: (s) =>
     s.day === 2 &&
@@ -241,6 +253,8 @@ const rescueElvira: Beat = {
 
 const townVisit: Beat = {
   id: 'town-visit',
+  title: 'The Town Square',
+  objective: 'Choose who Kyle engages with in Town Square.',
   priority: 80,
   preconditions: (s) =>
     s.day === 2 &&
@@ -270,6 +284,8 @@ const townVisit: Beat = {
 
 const mushroomMistake: Beat = {
   id: 'mushroom-mistake',
+  title: 'Forest Foraging',
+  objective: 'Choose what Kyle eats at the Forest Edge.',
   priority: 75,
   preconditions: (s) =>
     s.day === 2 &&
@@ -307,6 +323,8 @@ const mushroomMistake: Beat = {
 
 const eveningAtInn: Beat = {
   id: 'evening-at-inn',
+  title: 'Evening at the Inn',
+  objective: 'Spend the evening at the Willow Branch Inn.',
   priority: 70,
   preconditions: (s) =>
     s.day === 2 &&
@@ -344,6 +362,8 @@ const eveningAtInn: Beat = {
 
 const firstHarvest: Beat = {
   id: 'first-harvest',
+  title: 'First Harvest',
+  objective: "Decide what to do with Kyle's first harvest.",
   priority: 70,
   preconditions: (s) =>
     s.day >= 3 &&
@@ -376,6 +396,8 @@ const firstHarvest: Beat = {
 
 const curseHint: Beat = {
   id: 'curse-hint',
+  title: 'The Broken Statue',
+  objective: "Listen to Milo's account of the broken statue.",
   priority: 70,
   preconditions: (s) =>
     s.day >= 3 &&
@@ -401,6 +423,8 @@ const curseHint: Beat = {
 
 const cliffhanger: Beat = {
   id: 'cliffhanger',
+  title: 'Laurel at the Monastery',
+  objective: "Answer Laurel's invitation at the monastery.",
   priority: 100,
   preconditions: (s) =>
     s.day >= 3 &&

@@ -9,36 +9,6 @@ import { Descriptions } from './voiceCards';
 
 const DEFAULT_SLOT = 'default';
 
-const BEAT_TITLES: Record<string, string> = {
-  'lawyers-office': 'Inheritance Papers',
-  arrival: 'Arrival in Willow Creek',
-  'accept-task': 'Fix Up the Forgotten Farm',
-  'first-night': 'First Night',
-  'morning-chores': 'Harold at the Farm',
-  'rescue-elvira': 'A Noise in the Brambles',
-  'town-visit': 'The Town Square',
-  'mushroom-mistake': 'Forest Foraging',
-  'evening-at-inn': 'Evening at the Inn',
-  'first-harvest': 'First Harvest',
-  'curse-hint': 'The Broken Statue',
-  cliffhanger: 'Laurel at the Monastery',
-};
-
-const ACTIVE_OBJECTIVES: Record<string, string> = {
-  'lawyers-office': 'Decide what Kyle does with the inheritance papers.',
-  arrival: 'Choose how Kyle answers the Mayor.',
-  'accept-task': "Respond to the Mayor's formal Task offer.",
-  'first-night': "Get Kyle through his first night in Grandfather's cottage.",
-  'morning-chores': "Receive Harold's farm supplies.",
-  'rescue-elvira': 'Deal with the thrashing in the brambles.',
-  'town-visit': 'Choose who Kyle engages with in Town Square.',
-  'mushroom-mistake': 'Choose what Kyle eats at the Forest Edge.',
-  'evening-at-inn': 'Spend the evening at the Willow Branch Inn.',
-  'first-harvest': "Decide what to do with Kyle's first harvest.",
-  'curse-hint': "Listen to Milo's account of the broken statue.",
-  cliffhanger: "Answer Laurel's invitation at the monastery.",
-};
-
 type BeatLead = {
   beatId: string;
   title: string;
@@ -80,16 +50,16 @@ function narrativeProgress(state: any) {
   const currentBeat = activeBeat
     ? {
         id: activeBeat.id,
-        title: beatTitle(activeBeat.id),
+        title: activeBeat.title,
         status: 'active',
-        objective: ACTIVE_OBJECTIVES[activeBeat.id] ?? lead.summary,
+        objective: activeBeat.objective,
       }
     : null;
 
   return {
     taskbook: {
       status: activeBeat ? 'active' : readyBeat ? 'ready' : 'lead',
-      objective: activeBeat ? (ACTIVE_OBJECTIVES[activeBeat.id] ?? lead.summary) : lead.summary,
+      objective: activeBeat ? activeBeat.objective : lead.summary,
       detail: activeBeat ? 'Pick one of the story choices below to continue.' : lead.detail,
     },
     currentBeat,
@@ -253,12 +223,8 @@ function choiceMatchesAction(choice: any, actionId: string, payload?: any): bool
   return sameChoicePayload(actionId, choice?.payload, payload);
 }
 
-function beatTitle(beatId: string) {
-  return BEAT_TITLES[beatId] ?? beatId;
-}
-
 function beatLead(beatId: string, state: any, ready: boolean): BeatLead {
-  const title = beatTitle(beatId);
+  const title = getBeat(beatId)?.title ?? beatId;
   const requirements: string[] = [];
   const lead = (summary: string, detail: string): BeatLead => ({
     beatId,
